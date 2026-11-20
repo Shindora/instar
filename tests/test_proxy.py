@@ -17,6 +17,7 @@ import pytest
 from instar.events import CallRole, LLMCall
 from instar.proxy.app import Proxy
 from instar.proxy.upstreams import judge_url, model_url, resolve_upstreams
+from instar.store import JsonlSink
 from tests.fixtures.agents import answer
 from tests.fixtures.mock_upstream import serve
 
@@ -50,6 +51,7 @@ def build_proxy(
     seed: int = 0,
     fault_rates: Mapping[str, float] | None = None,
     spend_cap_usd: float | None = None,
+    latency_s: float = 5.0,
 ) -> Proxy:
     return Proxy(
         upstreams=direct_bases(upstream_url),
@@ -57,6 +59,7 @@ def build_proxy(
         seed=seed,
         fault_rates=fault_rates,
         spend_cap_usd=spend_cap_usd,
+        latency_s=latency_s,
     )
 
 
@@ -147,7 +150,10 @@ async def test_fault_schedule_is_identical_across_runs(upstream_url: str) -> Non
         sink = ListSink()
         with serve(build_proxy(upstream_url, sink, seed=7, fault_rates=rates).build_app()) as url:
             async with httpx.AsyncClient(timeout=30) as client:
-                sessions = [run_session(client, url, f"session-{i}", calls=4) for i in range(50)]
+                sessions = [
+                    run_session(client, url, f"session-{i}", calls=4, upstream=PROVIDERS[i % 3])
+                    for i in range(50)
+                ]
                 await asyncio.gather(*sessions)
         return {(c.session, c.index): c.fault for c in sink.calls}
 
@@ -158,25 +164,29 @@ async def test_fault_schedule_is_identical_across_runs(upstream_url: str) -> Non
     assert set(first.values()) == {"http_429", "http_500", "truncate", None}
 
 
-async def test_sessions_with_one_fault_key_get_the_same_faults(upstream_url: str) -> None:
+@pytest.mark.parametrize("upstream", PROVIDERS)
+async def test_sessions_with_one_fault_key_get_the_same_faults(
+    upstream_url: str, upstream: str
+) -> None:
     sink = ListSink()
     proxy = build_proxy(upstream_url, sink, fault_rates={"http_429": 0.3, "http_500": 0.2})
     proxy.fault_keys.update({"arm-a": "task-1:0", "arm-b": "task-1:0"})
     with serve(proxy.build_app()) as url:
         async with httpx.AsyncClient() as client:
-            a = await run_session(client, url, "arm-a", calls=20)
-            b = await run_session(client, url, "arm-b", calls=20)
+            a = await run_session(client, url, "arm-a", calls=20, upstream=upstream)
+            b = await run_session(client, url, "arm-b", calls=20, upstream=upstream)
     assert a == b
     assert set(a) == {200, 429, 500}
 
 
-async def test_judge_calls_are_never_faulted_or_capped(upstream_url: str) -> None:
+@pytest.mark.parametrize("upstream", PROVIDERS)
+async def test_judge_calls_are_never_faulted_or_capped(upstream_url: str, upstream: str) -> None:
     sink = ListSink()
     proxy = build_proxy(upstream_url, sink, fault_rates={"http_429": 1.0}, spend_cap_usd=1.0)
-    path, payload = call_for("openai")
+    path, payload = call_for(upstream)
     with serve(proxy.build_app()) as url:
-        agent = f"{model_url(url, 's1', 'openai')}/{path}"
-        judge = f"{judge_url(url, 's1', 'openai')}/{path}"
+        agent = f"{model_url(url, 's1', upstream)}/{path}"
+        judge = f"{judge_url(url, 's1', upstream)}/{path}"
         async with httpx.AsyncClient() as client:
             assert (await client.post(agent, json=payload)).status_code == 429
             assert (await client.post(judge, json=payload)).status_code == 200
@@ -304,3 +314,60 @@ def test_cli_proxy_logs_calls_and_survives_sigterm(upstream_url: str, tmp_path: 
     event = json.loads(line)
     assert (event["type"], event["session"], event["output_tokens"]) == ("LLMCall", "abc", 3)
     assert "a b" not in line
+
+
+@pytest.mark.parametrize("upstream", PROVIDERS)
+@pytest.mark.parametrize(
+    ("fault", "status"), [("http_429", 429), ("http_500", 500), ("latency", 200), ("truncate", 200)]
+)
+async def test_every_fault_works_on_every_shape(
+    upstream_url: str, mock_upstream: MockUpstream, upstream: str, fault: str, status: int
+) -> None:
+    mock_upstream.chunk_delay_s = 0.02
+    path, payload = call_for(upstream, stream=True)
+    sink = ListSink()
+    proxy = build_proxy(upstream_url, sink, fault_rates={fault: 1.0}, latency_s=0.2)
+    with serve(proxy.build_app()) as url:
+        async with httpx.AsyncClient(timeout=10) as client:
+            full = await client.post(f"{direct_bases(upstream_url)[upstream]}/{path}", json=payload)
+            started = time.perf_counter()
+            response = await client.post(f"{model_url(url, 's1', upstream)}/{path}", json=payload)
+            elapsed_s = time.perf_counter() - started
+    [call] = sink.calls
+    assert (response.status_code, call.status, call.fault) == (status, status, fault)
+    if fault == "truncate":
+        assert 0 < len(response.content) < len(full.content)
+    if fault == "latency":
+        assert elapsed_s >= 0.2
+        assert call.output_tokens == 3
+
+
+def test_query_string_is_never_recorded(sink: ListSink, proxy_url: str, tmp_path: Path) -> None:
+    path, payload = call_for("gemini")
+    url = f"{model_url(proxy_url, 's1', 'gemini')}/{path}?key=secret-key-123"
+    assert httpx.post(url, json=payload).status_code == 200
+    [call] = sink.calls
+    log = JsonlSink(tmp_path / "calls.jsonl")
+    log.emit(call)
+    log.close()
+    assert call.path == "v1beta/models/m:generateContent"
+    assert "secret-key-123" not in repr(call)
+    assert "secret-key-123" not in (tmp_path / "calls.jsonl").read_text()
+
+
+def test_vertex_exists_only_when_its_variable_is_set(upstream_url: str) -> None:
+    assert "vertex" not in resolve_upstreams(environ={})
+    sink = ListSink()
+    upstreams = resolve_upstreams(environ={"GOOGLE_VERTEX_BASE_URL": upstream_url})
+    path = "v1/projects/p/locations/us/publishers/google/models/gemini-x:streamGenerateContent"
+    payload = {"contents": [{"parts": [{"text": "a b"}]}]}
+    with serve(Proxy(upstreams=upstreams, sink=sink).build_app()) as url:
+        response = httpx.post(f"{model_url(url, 's1', 'vertex')}/{path}?alt=sse", json=payload)
+    assert response.status_code == 200
+    [call] = sink.calls
+    assert (call.upstream, call.model, call.input_tokens, call.output_tokens) == (
+        "vertex",
+        "gemini-x",
+        2,
+        3,
+    )

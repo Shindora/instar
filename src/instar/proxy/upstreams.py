@@ -15,6 +15,7 @@ DEFAULT_MODEL_ENV: dict[str, str] = {
     "OPENAI_BASE_URL": "openai",
     "ANTHROPIC_BASE_URL": "anthropic",
     "GOOGLE_GEMINI_BASE_URL": "gemini",
+    "GOOGLE_VERTEX_BASE_URL": "vertex",
 }
 
 
@@ -26,7 +27,8 @@ def resolve_upstreams(
     """Upstream name to base URL.
 
     A model variable already set where instar starts (a company gateway, say) replaces the
-    default for its upstream, so the proxy chains through it. Declared upstreams win over both.
+    default for its upstream, so the proxy chains through it; `vertex` exists only that way.
+    Declared upstreams win over both.
     """
     environ = os.environ if environ is None else environ
     upstreams = dict(DEFAULT_UPSTREAMS)

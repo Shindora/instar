@@ -83,6 +83,7 @@ class MockUpstream:
     """
 
     delay_s: float = 0.0
+    chunk_delay_s: float = 0.0
     fail_status: int | None = None
     cached_input_tokens: int = 0
     calls: int = 0
@@ -92,7 +93,7 @@ class MockUpstream:
             routes=[
                 Route("/v1/chat/completions", self._openai, methods=["POST"]),
                 Route("/v1/messages", self._anthropic, methods=["POST"]),
-                Route("/v1beta/models/{target}", self._gemini, methods=["POST"]),
+                Route("/{prefix:path}/models/{target}", self._gemini, methods=["POST"]),
             ]
         )
 
@@ -101,6 +102,15 @@ class MockUpstream:
         if self.delay_s:
             await asyncio.sleep(self.delay_s)
         return await request.json()
+
+    def _stream(self, chunks: AsyncIterator[bytes]) -> StreamingResponse:
+        async def paced() -> AsyncIterator[bytes]:
+            async for chunk in chunks:
+                yield chunk
+                if self.chunk_delay_s:
+                    await asyncio.sleep(self.chunk_delay_s)
+
+        return StreamingResponse(paced(), media_type="text/event-stream")
 
     def _failure(self, body: dict[str, Any]) -> Response | None:
         if self.fail_status is None:
@@ -139,9 +149,7 @@ class MockUpstream:
                 }
             )
         include_usage = bool((payload.get("stream_options") or {}).get("include_usage"))
-        return StreamingResponse(
-            _openai_stream(turn, usage if include_usage else None), media_type="text/event-stream"
-        )
+        return self._stream(_openai_stream(turn, usage if include_usage else None))
 
     async def _anthropic(self, request: Request) -> Response:
         payload = await self._receive(request)
@@ -171,7 +179,7 @@ class MockUpstream:
                     "usage": usage,
                 }
             )
-        return StreamingResponse(_anthropic_stream(turn, usage), media_type="text/event-stream")
+        return self._stream(_anthropic_stream(turn, usage))
 
     async def _gemini(self, request: Request) -> Response:
         payload = await self._receive(request)
@@ -184,33 +192,38 @@ class MockUpstream:
             return JSONResponse({"error": {"code": 404, "message": method}}, 404)
         turn = _Turn.from_gemini(payload, model)
         if method == "generateContent":
-            return JSONResponse(self._gemini_chunk(turn, turn.reply, turn.output_tokens, True))
+            return JSONResponse(self._gemini_chunk(turn, turn.reply, last=True))
         deltas = _deltas(turn.reply)
         chunks = [
-            self._gemini_chunk(turn, delta, i + 1, i == len(deltas) - 1)
+            self._gemini_chunk(turn, delta, last=i == len(deltas) - 1)
             for i, delta in enumerate(deltas)
         ]
         if request.query_params.get("alt") != "sse":
             return JSONResponse(chunks)
-        return StreamingResponse(iter([_sse(c) for c in chunks]), media_type="text/event-stream")
+        return self._stream(_sse_each(chunks))
 
-    def _gemini_chunk(self, turn: _Turn, text: str, output: int, last: bool) -> dict[str, Any]:
-        candidate: dict[str, Any] = {"content": {"role": "model", "parts": [{"text": text}]}}
-        if last:
-            candidate["finishReason"] = "STOP"
+    def _gemini_chunk(self, turn: _Turn, text: str, *, last: bool) -> dict[str, Any]:
+        """One response document. Like the real API, only the last one carries usage."""
+        content = {"role": "model", "parts": [{"text": text}]}
+        candidate: dict[str, Any] = {"content": content, "index": 0}
+        chunk: dict[str, Any] = {"candidates": [candidate], "modelVersion": turn.model}
+        chunk["responseId"] = MESSAGE_ID
+        if not last:
+            return chunk
+        candidate["finishReason"] = "STOP"
         prompt_tokens = turn.input_tokens + self.cached_input_tokens
-        usage = {
+        chunk["usageMetadata"] = {
             "promptTokenCount": prompt_tokens,
-            "candidatesTokenCount": output,
-            "totalTokenCount": prompt_tokens + output,
+            "candidatesTokenCount": turn.output_tokens,
+            "totalTokenCount": prompt_tokens + turn.output_tokens,
             "cachedContentTokenCount": self.cached_input_tokens,
         }
-        return {
-            "candidates": [{**candidate, "index": 0}],
-            "usageMetadata": usage,
-            "modelVersion": turn.model,
-            "responseId": MESSAGE_ID,
-        }
+        return chunk
+
+
+async def _sse_each(docs: list[dict[str, Any]]) -> AsyncIterator[bytes]:
+    for doc in docs:
+        yield _sse(doc)
 
 
 async def _openai_stream(turn: _Turn, usage: dict[str, Any] | None) -> AsyncIterator[bytes]:
