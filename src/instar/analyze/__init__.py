@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from instar.analyze import baseline as baselines
+from instar.analyze.ab import ABResult, compare_arms
 from instar.analyze.curve import (
     BreakingPoint,
     Bucket,
@@ -74,6 +75,7 @@ class Analysis:
     evaluation_version: str | None
     gates: list[GateResult] = field(default_factory=list)
     comparison: Comparison | None = None
+    ab: ABResult | None = None
     could_not_run: str | None = None
     gate_error: str | None = None
 
@@ -197,7 +199,15 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
                 comparison.warnings.append(
                     f"gate {gate.text!r} compares all tasks, {unmatched} of them unmatched"
                 )
-    return copy.replace(analysis, gates=gates, comparison=comparison, gate_error=gate_error)
+    ab = config.get("ab")
+    arms = None
+    if isinstance(ab, dict):
+        arms = compare_arms(
+            data, variable=ab["var"], a=ab["a"], b=ab["b"], primary=primary, seed=seed
+        )
+    return copy.replace(
+        analysis, gates=gates, comparison=comparison, gate_error=gate_error, ab=arms
+    )
 
 
 __all__ = ["Analysis", "TaskRow", "analyze"]

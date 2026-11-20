@@ -44,6 +44,27 @@ class Stage:
     hold_s: float | None = None
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AB:
+    """Two arms that differ only by one environment variable: `var` set to `a` or to `b`."""
+
+    var: str
+    a: str
+    b: str
+
+
+AB_SPEC = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^,\s]+)\s*,\s*([^,\s]+)\s*$")
+
+
+def _ab(value: object) -> AB:
+    match = AB_SPEC.match(str(value))
+    if not match:
+        raise ConfigError(f"--ab takes VARIABLE=a,b with two values: {value!r}")
+    if match[2] == match[3]:
+        raise ConfigError(f"--ab needs two different values: {value!r}")
+    return AB(var=match[1], a=match[2], b=match[3])
+
+
 def _positive_int(value: object) -> int:
     try:
         number = int(str(value))
@@ -164,6 +185,7 @@ OPTIONS: dict[str, tuple[str, Callable[[object], object]]] = {
     "runs-dir": ("runs_dir", lambda v: Path(str(v))),
     "upstreams": ("upstreams", _table),
     "model-env": ("model_env", _table),
+    "ab": ("ab", _ab),
 }
 SHAPE_FLAGS = frozenset({"users", "hold"})
 
@@ -201,6 +223,8 @@ def resolve(
             raise ConfigError("--rate needs --hold: how long tasks keep arriving")
         if resolved.get("stages"):
             raise ConfigError("--rate replaces stages; give one or the other")
+    if resolved.get("ab") is not None and resolved.get("executor") == "inline":
+        raise ConfigError("--ab needs the process executor: arms differ by environment variables")
     if resolved.get("stages") and resolved.get("hold_s") is not None:
         raise ConfigError("--hold applies to one stage; with stages, give each its own hold")
     return resolved

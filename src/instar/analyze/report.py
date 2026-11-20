@@ -104,6 +104,33 @@ def markdown(a: Analysis) -> str:
             _group_line("Repeats", a.repeats, a.primary, percent),
             "",
         ]
+    if (ab := a.ab) is not None:
+        lines += [
+            f"## A/B: `{ab.variable}` = `{ab.a.name}` vs `{ab.b.name}`",
+            "",
+            ab.sentence(),
+            "",
+            f"| Arm | Executions | {a.primary} | Cost per pass | p50 run | Cached input tokens |",
+            "|---|---|---|---|---|---|",
+        ]
+        for arm in (ab.a, ab.b):
+            cached = "n/a" if arm.cached_share is None else f"{arm.cached_share:.0%}"
+            lines.append(
+                f"| `{arm.name}` | {arm.executions} | {_estimate(arm.primary, percent)} |"
+                f" {_usd(arm.cost_per_pass)} | {_seconds(arm.p50_run_s)} | {cached} |"
+            )
+        if ab.cost is not None:
+            lines += [
+                "",
+                f"Cost per execution, b - a: {ab.cost.value:+.4f} USD"
+                f" ({ab.cost.low:+.4f} to {ab.cost.high:+.4f}).",
+            ]
+        lines += [
+            "",
+            "Which arm runs first is seeded per task, so neither always warms a cache"
+            " for the other.",
+            "",
+        ]
     if (cmp := a.comparison) is not None:
         regressed = cmp.regressed
         lines += [f"## Compared with baseline `{cmp.baseline_run}`", ""]
@@ -150,6 +177,10 @@ def to_json(a: Analysis) -> str:
     document = asdict(a)
     document["gates"] = [{**asdict(g), "sentence": g.sentence} for g in a.gates]
     document["percent_metrics"] = sorted(a.percent_metrics)
+    if a.ab is not None:
+        document["ab"]["sentence"] = a.ab.sentence()
+        if a.ab.primary is not None:
+            document["ab"]["primary"]["detected"] = a.ab.primary.detected
     if a.comparison is not None:
         document["comparison"]["changes"] = [
             {**asdict(c), "regressed": c.regressed} for c in a.comparison.changes

@@ -18,7 +18,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from instar.config import Stage
+from instar.config import AB, Stage
 from instar.dataset import limit
 from instar.events import Execution, ExecutionStatus, Load, Metric, Run, Shed, StageWindow
 from instar.executors import ExecutionSpec, Outcome, executors
@@ -29,7 +29,7 @@ from instar.store import Store
 from instar.user import load_agentfile
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Mapping, Sequence
 
     from instar.dataset import Task
     from instar.executors.base import ExecutorFn
@@ -40,7 +40,15 @@ DEFAULT_USERS = 4
 MAX_PROCESS_USERS = 64
 DEFAULT_ARM = "default"
 
-type WorkItem = tuple[Task, int]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Arm:
+    name: str
+    env: dict[str, str]
+
+
+type WorkItem = tuple[Task, int, Arm]
+type ArmOrder = Callable[[Task, int], list[Arm]]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -72,7 +80,14 @@ class RunOptions:
     strict: bool = False
     interval_s: float = 30.0
     breaking_p95: float = 2.0
+    ab: AB | None = None
     kind: str = "run"
+
+    def arms(self) -> tuple[Arm, ...]:
+        if self.ab is None:
+            return (Arm(name=DEFAULT_ARM, env={}),)
+        ab = self.ab
+        return (Arm(name=ab.a, env={ab.var: ab.a}), Arm(name=ab.b, env={ab.var: ab.b}))
 
     def shape(self) -> tuple[Stage, ...]:
         """The stages to run: the given list, or one stage from `users` and `hold_s`."""
@@ -97,6 +112,25 @@ def new_run_id() -> str:
     now_ns = time.time_ns()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now_ns / 1e9))
     return f"{stamp}-{now_ns // 1_000_000 % 1000:03d}-{secrets.token_hex(3)}"
+
+
+def ordered_arms(arms: Sequence[Arm], *, seed: int, task_id: str, repeat: int) -> list[Arm]:
+    """Both arms of one (task, repeat), next to each other; which goes first is seeded, so
+    neither arm always runs second against a provider cache the other warmed."""
+    order = list(arms)
+    random.Random(f"{seed}:arms:{task_id}:{repeat}").shuffle(order)
+    return order
+
+
+def _check_arms(loop: _Loop, ab: AB | None) -> dict[str, dict[str, str]]:
+    """Each arm's variables, with the session left as a placeholder; arms may differ in one."""
+    envs = {arm.name: loop.overlay("<session>", arm) for arm in loop.runner.options.arms()}
+    if ab is not None:
+        first, second = envs.values()
+        differ = {k for k in first.keys() | second.keys() if first.get(k) != second.get(k)}
+        if differ != {ab.var}:
+            raise RuntimeError(f"arms must differ only in {ab.var}, not in {sorted(differ)}")
+    return envs
 
 
 def _git(folder: Path, *args: str) -> str:
@@ -183,9 +217,10 @@ class Drain:
 class Rounds:
     """Endless rounds over a seeded shuffle of the task set; the round number is the repeat."""
 
-    def __init__(self, tasks: Sequence[Task], seed: str) -> None:
+    def __init__(self, tasks: Sequence[Task], seed: str, arms: ArmOrder) -> None:
         self.tasks = list(tasks)
         self.rng = random.Random(seed)
+        self.arms = arms
         self.queue: deque[WorkItem] = deque()
         self.round = -1
 
@@ -194,7 +229,9 @@ class Rounds:
             self.round += 1
             order = self.tasks[:]
             self.rng.shuffle(order)
-            self.queue.extend((task, self.round) for task in order)
+            self.queue.extend(
+                (task, self.round, arm) for task in order for arm in self.arms(task, self.round)
+            )
         return self.queue.popleft()
 
     def finished(self) -> None:
@@ -285,6 +322,8 @@ class Runner:
                     self.primary = user.primary
                     tasks = limit(user.tasks, options.limit)
                     loop = _Loop(self, user, tasks, executor, proxy, proxy_url, model_env, store)
+                    config["arms"] = _check_arms(loop, options.ab)
+                    _write_json(self.run_dir / "config.json", config)
                     self._shape = asyncio.create_task(loop.drive())
                     if self.stopping:
                         self._shape.cancel()
@@ -369,10 +408,15 @@ class _Loop:
         options = self.runner.options
         started_ns = time.time_ns()
         if stage.hold_s is None:
-            work = [(t, r) for r in range(options.repeat) for t in self.tasks]
+            work = [
+                (t, r, arm)
+                for r in range(options.repeat)
+                for t in self.tasks
+                for arm in self.arm_order(t, r)
+            ]
             source: Drain | Rounds = Drain(work)
         else:
-            source = Rounds(self.tasks, seed=f"{options.seed}:{index}")
+            source = Rounds(self.tasks, seed=f"{options.seed}:{index}", arms=self.arm_order)
         self.stage, self.source = index, source
         await self.ramp_to(stage.users)
         steady_ns = time.time_ns()
@@ -400,9 +444,9 @@ class _Loop:
                 if source is None or item is None:
                     await self.changed.wait()
                     continue
-                task, repeat = item
+                task, repeat, arm = item
                 try:
-                    await self.execute(task, repeat, self.stage, self.ramping)
+                    await self.execute(task, repeat, arm, self.stage, self.ramping)
                 finally:
                     source.finished()
                 if think_s:
@@ -414,7 +458,7 @@ class _Loop:
         """Tasks arrive on a fixed schedule; an arrival that finds every user busy is shed."""
         options = self.runner.options
         cap = options.max_users or MAX_PROCESS_USERS
-        source = Rounds(self.tasks, seed=f"{options.seed}:1")
+        source = Rounds(self.tasks, seed=f"{options.seed}:1", arms=self.arm_order)
         self.stage = 1
         self.store.emit(Load(at_ns=time.time_ns(), stage=1, users=cap, ramping=False))
         running: set[asyncio.Task[None]] = set()
@@ -424,11 +468,11 @@ class _Loop:
         assert self.group is not None
         for n in range(arrivals):
             await asyncio.sleep(max(0.0, started + n / rate_per_s - loop.time()))
-            task, repeat = source.take()
+            task, repeat, arm = source.take()
             if len(running) >= cap:
                 self.store.emit(Shed(stage=1, at_ns=time.time_ns(), task_id=task.id))
                 continue
-            execution = self.group.create_task(self.execute(task, repeat, 1, False))
+            execution = self.group.create_task(self.execute(task, repeat, arm, 1, False))
             running.add(execution)
             execution.add_done_callback(running.discard)
         await asyncio.sleep(max(0.0, started + hold_s - loop.time()))
@@ -443,12 +487,21 @@ class _Loop:
             )
         )
 
-    async def execute(self, task: Task, repeat: int, stage: int, ramping: bool) -> None:
+    def arm_order(self, task: Task, repeat: int) -> list[Arm]:
+        options = self.runner.options
+        return ordered_arms(options.arms(), seed=options.seed, task_id=task.id, repeat=repeat)
+
+    def overlay(self, session: str, arm: Arm) -> dict[str, str]:
+        """The variables instar sets for one execution, on top of the inherited environment."""
+        env = {var: model_url(self.proxy_url, session, up) for var, up in self.model_env.items()}
+        env["OTEL_RESOURCE_ATTRIBUTES"] = _resource_attributes(session)
+        return {**env, **arm.env}
+
+    async def execute(self, task: Task, repeat: int, arm: Arm, stage: int, ramping: bool) -> None:
         options = self.runner.options
         session = new_session()
         self.proxy.fault_keys[session] = f"{task.id}:{repeat}"
-        env = {var: model_url(self.proxy_url, session, up) for var, up in self.model_env.items()}
-        env["OTEL_RESOURCE_ATTRIBUTES"] = _resource_attributes(session)
+        env = self.overlay(session, arm)
         started_ns = time.time_ns()
         clock = time.perf_counter_ns()
         with tempfile.TemporaryDirectory(prefix="instar-work-") as workdir:
@@ -456,7 +509,7 @@ class _Loop:
                 agentfile=options.agentfile,
                 task=task,
                 session=session,
-                arm=DEFAULT_ARM,
+                arm=arm.name,
                 proxy_url=self.proxy_url,
                 env=env,
                 workdir=Path(workdir),
@@ -469,15 +522,18 @@ class _Loop:
             except asyncio.CancelledError:
                 elapsed_ns = time.perf_counter_ns() - clock
                 cancelled = Outcome(status=ExecutionStatus.CANCELLED, run_ns=elapsed_ns)
-                self.record(session, task, repeat, stage, ramping, started_ns, clock, cancelled)
+                self.record(
+                    session, task, repeat, arm, stage, ramping, started_ns, clock, cancelled
+                )
                 raise
-        self.record(session, task, repeat, stage, ramping, started_ns, clock, outcome)
+        self.record(session, task, repeat, arm, stage, ramping, started_ns, clock, outcome)
 
     def record(
         self,
         session: str,
         task: Task,
         repeat: int,
+        arm: Arm,
         stage: int,
         ramping: bool,
         started_ns: int,
@@ -489,7 +545,7 @@ class _Loop:
             Execution(
                 session=session,
                 task_id=task.id,
-                arm=DEFAULT_ARM,
+                arm=arm.name,
                 repeat=repeat,
                 stage=stage,
                 status=outcome.status,

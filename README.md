@@ -15,8 +15,8 @@ judges it, without changing agent code.
 **Status:** early development. Working: the LLM proxy (OpenAI, Anthropic and Gemini shapes,
 seeded fault injection, spend cap), the run store, `instar run` / `instar doctor` with process
 and inline executors, load shapes (stages, timed holds, ramps, open-loop arrivals), the load curve
-and breaking point, baselines, `--fail-if` gates and Markdown/JSON/JUnit reports. Next: A/B,
-telemetry, the web UI.
+and breaking point, baselines, `--fail-if` gates, Markdown/JSON/JUnit reports, and A/B runs
+(`--ab AGENT_VERSION=v1,v2`) with a paired comparison over tasks. Next: telemetry, the web UI.
 
 ```bash
 OPENAI_API_KEY=... uv run instar doctor -f examples/quickstart/agentfile.py

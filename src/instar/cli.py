@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(run, "--rate", key="rate", help="open loop: arrivals, e.g. 120/h (needs --hold)")
     _flag(run, "--max-users", key="max-users", help="open loop: arrivals over this are shed")
     _flag(run, "--repeat", key="repeat", help="runs of each task in a stage; default 1")
+    _flag(run, "--ab", key="ab", metavar="VAR=a,b", help="compare two values of one env variable")
     _flag(run, "--limit", key="limit", help="run only the first N tasks")
     _flag(run, "--faults", key="faults", metavar="NAME=RATE[,...]")
     _flag(run, "--latency-s", key="latency-s", help="delay of the latency fault; default 5")
@@ -215,6 +216,8 @@ def _console(a: Analysis, run_dir: Path) -> None:
         print(f"breaking point: stage {a.breaking_point.stage} ({a.breaking_point.users} users)")
     for gate in a.gates:
         print(f"gate {gate.state}: {gate.text}: {gate.sentence}")
+    if a.ab is not None:
+        print(f"a/b: {a.ab.sentence()}")
     if (cmp := a.comparison) is not None:
         unmatched = len(cmp.only_now) + len(cmp.only_baseline)
         print(
@@ -250,6 +253,7 @@ def _run(args: argparse.Namespace) -> int:
                 repeat=1,
                 limit=1,
                 keep_outputs=True,
+                ab=None,
             )
         baseline = _load_baseline(options)
     except ConfigError as exc:
