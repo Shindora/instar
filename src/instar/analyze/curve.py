@@ -4,7 +4,6 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from instar.analyze.data import COST_METRIC
 from instar.analyze.stats import Estimate, mean, percentile, rate
 from instar.events import ExecutionStatus
 
@@ -102,8 +101,8 @@ def group(data: RunData, executions: Sequence[Execution], name: str, *, seed: st
     sessions = {e.session for e in executions}
     calls = [c for c in data.calls if c.session in sessions and c.role == "agent"]
     run_s = [e.run_ns / 1e9 for e in executions]
-    costs = [c for e in executions if (c := data.cost(e)) is not None]
-    cost = sum(costs) if costs else None
+    costs = [data.cost(e) for e in executions]
+    cost = None if not costs or None in costs else sum(c or 0.0 for c in costs)
     passes = _passes(data, executions, name)
     return Group(
         executions=len(executions),
@@ -197,7 +196,7 @@ def time_series(data: RunData, name: str, interval_s: float) -> list[Bucket]:
         planned = before[-1:] + during
         finished = [e for e in data.finished() if low <= e.ended_ns < high]
         flags = [data.metrics.get(e.session, {}).get(name) is True for e in finished]
-        costs = [c for e in finished if (c := data.cost(e)) is not None]
+        costs = [data.cost(e) for e in finished]
         buckets.append(
             Bucket(
                 start_s=i * interval_s,
@@ -209,14 +208,14 @@ def time_series(data: RunData, name: str, interval_s: float) -> list[Bucket]:
                 model_errors=sum(
                     1 for c in data.calls if low <= c.started_ns < high and c.status >= 400
                 ),
-                spend_usd=sum(costs) if costs else None,
+                spend_usd=None if not costs or None in costs else sum(c or 0.0 for c in costs),
             )
         )
     return buckets
 
 
 def metric_names(data: RunData) -> list[str]:
-    return sorted({n for m in data.metrics.values() for n in m} - {COST_METRIC})
+    return sorted({n for m in data.metrics.values() for n in m})
 
 
 def could_not_run(data: RunData) -> str | None:

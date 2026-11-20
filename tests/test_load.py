@@ -128,6 +128,9 @@ def test_open_loop_over_its_user_cap_reports_shed_arrivals(
         (["--fail-if", "nope < 1"], 2),
         (["--fail-if", "passed < baseline"], 2),
         (["--profile", "missing"], 2),
+        (["--fail-if", "cost_per_pass > 1"], 0),
+        (["--fail-if", "cost_per_pass > 1", "--strict"], 1),
+        (["--fail-if", "tasks_per_hour < 1"], 0),
     ],
 )
 def test_gate_exit_codes(tmp_path: Path, args: list[str], code: int) -> None:
@@ -237,4 +240,6 @@ def test_timed_run_prints_a_projection_from_the_last_preflight(
     assert cli(tmp_path, "-u", "1", "--hold", "0.3s")[0] == 0
     err = capsys.readouterr().err
     assert "projection from preflight" in err
-    assert "spend unknown (the preflight reported no cost)" in err
+    assert (
+        "spend unknown: no price for model 'mock-model' (add it under [tool.instar.prices])" in err
+    )

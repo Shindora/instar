@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -9,7 +10,8 @@ from instar.analyze.gate import Gate, GateState, evaluate
 from instar.analyze.stats import Estimate
 from instar.cli import main
 from instar.config import ConfigError, Stage, load_project, parse_duration, parse_rate, resolve
-from instar.events import Execution
+from instar.events import Execution, LLMCall
+from instar.proxy.pricing import Price
 from instar.store import StoreReader
 
 LOAD = Path(__file__).parents[1] / "tests" / "fixtures" / "agentfile_load.py"
@@ -126,3 +128,48 @@ def test_gate_sentences_and_inconclusive_state() -> None:
     assert relative.threshold == pytest.approx(0.48)
     assert relative.state is GateState.FAILED
     assert relative.sentence == "Fails above 0.48. Now 0.5. Failed."
+
+
+def test_prices_and_token_cap_resolve() -> None:
+    project = {
+        "prices": {
+            "gpt-x": {"input": 3, "output": 15, "cached": 0.3},
+            "y": {"input": 1, "output": 2},
+        }
+    }
+    resolved = resolve({"token-cap": "5000"}, profile=None, project=project)
+    assert resolved["prices"] == {
+        "gpt-x": Price(input=3.0, output=15.0, cached=0.3),
+        "y": Price(input=1.0, output=2.0),
+    }
+    assert resolved["token_cap"] == 5000
+    with pytest.raises(ConfigError, match=r"prices\.z needs input and output"):
+        resolve({}, profile=None, project={"prices": {"z": {"input": 1}}})
+    with pytest.raises(ConfigError, match="unknown keys: currency"):
+        resolve(
+            {},
+            profile=None,
+            project={"prices": {"z": {"input": 1, "output": 1, "currency": "eur"}}},
+        )
+
+
+@pytest.mark.usefixtures("model_env")
+def test_price_table_gives_cost_per_pass_and_a_token_cap_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "instar.toml").write_text(
+        f'agentfile = "{LOAD}"\nproject = "priced"\nexecutor = "inline"\nusers = 1\n'
+        '[prices."mock-model"]\ninput = 1.0\noutput = 2.0\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    assert main(["run", "--limit", "4", "--fail-if", "cost_per_pass > 0.001"]) == 0
+    assert main(["run", "--limit", "6", "--token-cap", "12"]) == 0
+    priced, capped = sorted((tmp_path / "runs" / "priced").iterdir())
+    report = json.loads((priced / "report.json").read_text())
+    assert report["metrics"]["cost_per_pass"]["value"] == pytest.approx(8e-6)
+    assert report["gates"][0]["state"] == "passed"
+    assert report["cost_note"] is None
+    statuses = json.loads((capped / "report.json").read_text())["summary"]["statuses"]
+    assert statuses == {"ok": 3, "error": 3}
+    faults = [c.fault for c in StoreReader(capped).select(LLMCall)]
+    assert faults == [None, None, None, "token_cap", "token_cap", "token_cap"]

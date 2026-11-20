@@ -15,6 +15,7 @@ from starlette.routing import Route
 
 from instar.events import CallRole, LLMCall
 from instar.proxy.faults import FaultContext, check_rates, error_response, faults, pick_fault
+from instar.proxy.pricing import call_cost
 from instar.proxy.usage import parse_usage
 
 if TYPE_CHECKING:
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from instar.events import Sink
+    from instar.proxy.pricing import Price
 
 REQUEST_DROP = frozenset({"host", "content-length", "transfer-encoding", "connection"})
 RESPONSE_DROP = frozenset({"content-length", "transfer-encoding", "connection"})
@@ -35,7 +37,9 @@ class Proxy:
 
     Routes: /s/<session>/<upstream>/<path> for the agent, /j/<session>/<upstream>/<path> for the
     judge (never faulted, never capped), /<upstream>/<path> for calls that carry no session.
-    Call counters and spend live in memory: one run, one proxy.
+    Agent calls stop once `token_cap` tokens or `spend_cap_usd` of priced cost are used. Cost
+    comes only from `prices`; a call to an unpriced model has no cost and says why. Call
+    counters, tokens and spend live in memory: one run, one proxy.
     """
 
     def __init__(
@@ -47,6 +51,8 @@ class Proxy:
         fault_rates: Mapping[str, float] | None = None,
         latency_s: float = 5.0,
         spend_cap_usd: float | None = None,
+        token_cap: int | None = None,
+        prices: Mapping[str, Price] | None = None,
     ) -> None:
         self.upstreams = dict(upstreams)
         self.sink = sink
@@ -56,6 +62,9 @@ class Proxy:
         self.latency_s = latency_s
         self.spend_cap_usd = spend_cap_usd
         self.spent_usd = 0.0
+        self.token_cap = token_cap
+        self.tokens_used = 0
+        self.prices = dict(prices or {})
         self.fault_keys: dict[str, str] = {}
         self._calls: Counter[tuple[CallRole, str]] = Counter()
         self._client: httpx.AsyncClient | None = None
@@ -113,6 +122,9 @@ class Proxy:
             return self._reject(call, clock, error_response(404, "unknown_upstream"), None)
         max_chunks = None
         if role is CallRole.AGENT:
+            if self.token_cap is not None and self.tokens_used >= self.token_cap:
+                rejected = error_response(429, "token_cap_exceeded")
+                return self._reject(call, clock, rejected, "token_cap")
             if self.spend_cap_usd is not None and self.spent_usd >= self.spend_cap_usd:
                 return self._reject(call, clock, error_response(429, "budget_exceeded"), "budget")
             key = self.fault_keys.get(session, session)
@@ -153,7 +165,8 @@ class Proxy:
         try:
             upstream = await self._client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
-            self._emit(copy.replace(call, status=502, error=type(exc).__name__), clock)
+            failed = copy.replace(call, status=502, error=type(exc).__name__, cost_usd=0.0)
+            self._emit(failed, clock)
             return JSONResponse(
                 {"type": "error", "error": {"type": "proxy_upstream_error", "message": str(exc)}},
                 502,
@@ -187,6 +200,16 @@ class Proxy:
         finally:
             # ponytail: emit before any await, so a cancelled relay still records its call.
             usage = parse_usage(call.path, b"".join(chunks))
+            cost, note = call_cost(
+                self.prices,
+                call.model,
+                input_tokens=usage.input_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+            if call.role is CallRole.AGENT:
+                self.tokens_used += usage.input_tokens + usage.output_tokens
+                self.spent_usd += cost or 0.0
             finished = copy.replace(
                 call,
                 status=upstream.status_code,
@@ -196,12 +219,15 @@ class Proxy:
                 input_tokens=usage.input_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 output_tokens=usage.output_tokens,
+                cost_usd=cost,
+                cost_note=note,
             )
             self._emit(finished, clock)
             await upstream.aclose()
 
     def _reject(self, call: LLMCall, clock: int, response: Response, fault: str | None) -> Response:
-        self._emit(copy.replace(call, status=response.status_code, fault=fault), clock)
+        rejected = copy.replace(call, status=response.status_code, fault=fault, cost_usd=0.0)
+        self._emit(rejected, clock)
         return response
 
     def _emit(self, call: LLMCall, clock: int) -> None:

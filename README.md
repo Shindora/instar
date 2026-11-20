@@ -24,6 +24,16 @@ OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py -u 4 --
 OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py --stages 1,4,8 --fail-if "passed < 0.8"
 ```
 
+Tokens are always counted by instar's proxy; `--token-cap N` stops agent model calls after N tokens.
+Dollar cost needs a price table (USD per million tokens); without one, cost reads "n/a" and says why:
+
+```toml
+[tool.instar.prices."gpt-4o-mini"]
+input = 0.15
+output = 0.60
+cached = 0.075
+```
+
 ## In CI
 
 ```yaml

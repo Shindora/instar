@@ -72,7 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(run, "--limit", key="limit", help="run only the first N tasks")
     _flag(run, "--faults", key="faults", metavar="NAME=RATE[,...]")
     _flag(run, "--latency-s", key="latency-s", help="delay of the latency fault; default 5")
-    _flag(run, "--spend-cap", key="spend-cap", help="USD; counts reported cost only")
+    _flag(run, "--spend-cap", key="spend-cap", help="USD, from [tool.instar.prices]")
+    _flag(run, "--token-cap", key="token-cap", help="agent tokens; the proxy refuses calls past it")
     _flag(run, "--keep-outputs", key="keep-outputs", action="store_const", const=True)
     _flag(run, "--fail-if", key="fail-if", action="append", metavar="EXPR")
     _flag(run, "--baseline", key="baseline", help="baseline file for gates and per-task diffs")
@@ -167,13 +168,13 @@ def _projection(options: RunOptions) -> str:
             for s in options.shape()
             if s.hold_s is not None
         )
-    cost = data.cost(execution)
+    cost, note = data.cost(execution), data.cost_note()
     line = (
         f"projection from preflight {preflight.name}:"
         f" about {executions:.0f} executions of {run_s:.1f} s"
     )
     if cost is None:
-        return f"{line}; spend unknown (the preflight reported no cost)"
+        return f"{line}; spend unknown: {note or 'the preflight has no cost'}"
     spend = executions * cost
     line = f"{line}, about ${spend:.2f}"
     if options.spend_cap_usd is not None and spend > options.spend_cap_usd:

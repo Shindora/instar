@@ -16,6 +16,7 @@ import pytest
 
 from instar.events import CallRole, LLMCall
 from instar.proxy.app import Proxy
+from instar.proxy.pricing import Price
 from instar.proxy.upstreams import judge_url, model_url, resolve_upstreams
 from instar.server import serve_in_thread as serve
 from instar.store import JsonlSink
@@ -376,3 +377,50 @@ def test_vertex_exists_only_when_its_variable_is_set(upstream_url: str) -> None:
         2,
         3,
     )
+
+
+async def test_prices_give_each_call_a_cost_or_say_why_it_has_none(
+    upstream_url: str, mock_upstream: MockUpstream
+) -> None:
+    mock_upstream.cached_input_tokens = 5
+    sink = ListSink()
+    prices = {"m": Price(input=1.0, output=2.0, cached=0.5)}
+    proxy = Proxy(upstreams=direct_bases(upstream_url), sink=sink, prices=prices)
+    path, payload = call_for("anthropic")
+    with serve(proxy.build_app()) as url:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{model_url(url, 's1', 'anthropic')}/{path}", json=payload)
+            other = {**payload, "model": "other"}
+            await client.post(f"{model_url(url, 's1', 'anthropic')}/{path}", json=other)
+            await client.post(f"{judge_url(url, 's1', 'anthropic')}/{path}", json=payload)
+    priced, unpriced, judged = sink.calls
+    assert priced.cost_usd == pytest.approx((2 * 1.0 + 5 * 0.5 + 3 * 2.0) / 1e6)
+    assert (unpriced.cost_usd, unpriced.cost_note) == (None, "no price for model 'other'")
+    assert judged.cost_usd == priced.cost_usd
+    assert proxy.spent_usd == pytest.approx(priced.cost_usd)
+
+
+async def test_spend_cap_counts_priced_agent_calls(upstream_url: str) -> None:
+    sink = ListSink()
+    prices = {"m": Price(input=1.0, output=2.0)}
+    proxy = Proxy(
+        upstreams=direct_bases(upstream_url), sink=sink, prices=prices, spend_cap_usd=15e-6
+    )
+    with serve(proxy.build_app()) as url:
+        async with httpx.AsyncClient() as client:
+            assert await run_session(client, url, "s1", calls=3) == [200, 200, 429]
+    assert [c.fault for c in sink.calls] == [None, None, "budget"]
+    assert proxy.spent_usd == pytest.approx(2 * 8e-6)
+
+
+async def test_token_cap_stops_agent_calls_but_never_judge_calls(upstream_url: str) -> None:
+    sink = ListSink()
+    proxy = Proxy(upstreams=direct_bases(upstream_url), sink=sink, token_cap=12)
+    path, payload = call_for("openai")
+    with serve(proxy.build_app()) as url:
+        async with httpx.AsyncClient() as client:
+            assert await run_session(client, url, "s1", calls=4) == [200, 200, 200, 429]
+            judge = await client.post(f"{judge_url(url, 's1', 'openai')}/{path}", json=payload)
+    assert judge.status_code == 200
+    assert proxy.tokens_used == 15
+    assert [c.fault for c in sink.calls] == [None, None, None, "token_cap", None]

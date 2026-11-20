@@ -64,6 +64,8 @@ class LLMCall:
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float | None = None
+    cost_note: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

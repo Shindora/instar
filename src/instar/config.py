@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from instar.proxy.pricing import Price
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -130,6 +132,33 @@ def _rate_value(value: object) -> float:
         raise ConfigError(f"fault rate must be a number: {value!r}") from None
 
 
+def _price_number(model: str, field: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise ConfigError(
+            f"prices.{model}.{field} must be a number of USD per 1M tokens: {value!r}"
+        )
+    return float(value)
+
+
+def _prices(value: object) -> dict[str, Price]:
+    """`[tool.instar.prices]`: model -> { input = 3.0, output = 15.0, cached = 0.3 }, USD per 1M."""
+    if not isinstance(value, dict):
+        raise ConfigError(f"prices must map model ids to tables: {value!r}")
+    prices = {}
+    for model, table in value.items():
+        if not isinstance(table, dict) or not {"input", "output"} <= table.keys():
+            raise ConfigError(f"prices.{model} needs input and output (USD per 1M tokens)")
+        if unknown := set(table) - {"input", "output", "cached"}:
+            raise ConfigError(f"prices.{model} has unknown keys: {', '.join(sorted(unknown))}")
+        cached = table.get("cached")
+        prices[str(model)] = Price(
+            input=_price_number(model, "input", table["input"]),
+            output=_price_number(model, "output", table["output"]),
+            cached=None if cached is None else _price_number(model, "cached", cached),
+        )
+    return prices
+
+
 def _strings(value: object) -> tuple[str, ...]:
     items = [value] if isinstance(value, str) else value
     if not isinstance(items, list | tuple):
@@ -176,6 +205,8 @@ OPTIONS: dict[str, tuple[str, Callable[[object], object]]] = {
     "faults": ("faults", _faults),
     "latency-s": ("latency_s", _positive_float),
     "spend-cap": ("spend_cap_usd", _positive_float),
+    "token-cap": ("token_cap", _positive_int),
+    "prices": ("prices", _prices),
     "keep-outputs": ("keep_outputs", _bool),
     "fail-if": ("fail_if", _strings),
     "baseline": ("baseline", lambda v: Path(str(v))),
@@ -224,7 +255,7 @@ def resolve(
         if resolved.get("stages"):
             raise ConfigError("--rate replaces stages; give one or the other")
     if resolved.get("ab") is not None and resolved.get("executor") == "inline":
-        raise ConfigError("--ab needs the process executor: arms differ by environment variables")
+        raise ConfigError("--ab needs an executor with per-execution environment; inline has none")
     if resolved.get("stages") and resolved.get("hold_s") is not None:
         raise ConfigError("--hold applies to one stage; with stages, give each its own hold")
     return resolved

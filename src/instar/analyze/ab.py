@@ -5,28 +5,33 @@ from __future__ import annotations
 import math
 import random
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from instar.analyze.curve import is_bool_metric, primary_estimate
 from instar.analyze.stats import RESAMPLES, Z_95, Estimate, percentile
+from instar.events import ExecutionStatus
+from instar.judge import Direction, MetricSpec
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from instar.analyze.data import RunData
     from instar.events import Execution
 
 ALPHA = 0.05
 Z_POWER_80 = 0.841621
-EXACT_DISCORDANT = 6  # fewest one-sided discordant pairs for exact McNemar p < 0.05: 2 / 2**6
+EXACT_DISCORDANT = 6  # fewest one-way discordant pairs for exact McNemar p < 0.05: 2 / 2**6
+POWER_RULE = "80% power"
+EXACT_RULE = "minimum that can reach p < 0.05"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ArmStats:
     name: str
     executions: int
+    failures: dict[str, int]
     primary: Estimate
     cost_per_pass: float | None
     p50_run_s: float | None
@@ -43,8 +48,9 @@ class Difference:
     high: float
     pairs: int
     tasks: int
-    mcnemar_p: float | None
-    smallest_detectable: float | None
+    mcnemar_p: float | None = None
+    smallest_detectable: float | None = None
+    smallest_detectable_rule: str | None = None
 
     @property
     def detected(self) -> bool:
@@ -56,9 +62,29 @@ class ABResult:
     variable: str
     a: ArmStats
     b: ArmStats
+    direction: Direction
+    worst: float
     primary: Difference | None
     cost: Difference | None
+    run_s: Difference | None
     percent: bool
+
+    @property
+    def scoring(self) -> str:
+        if self.percent:
+            return "A failed or unjudged execution counts as not passed."
+        return (
+            f"{self.direction.capitalize()} is better; a failed or unscored execution counts as"
+            f" the worst value, {self.worst:g}."
+        )
+
+    @property
+    def failures(self) -> str:
+        def counts(arm: ArmStats) -> str:
+            listed = ", ".join(f"{n} {status}" for status, n in sorted(arm.failures.items()))
+            return f"{arm.name} {listed or 'none'}"
+
+        return f"Failures: {counts(self.a)}; {counts(self.b)}."
 
     def sentence(self) -> str:
         diff = self.primary
@@ -68,7 +94,8 @@ class ABResult:
         span = f"{show(diff.low, True)} to {show(diff.high, True)}"
         counted = f"over {diff.pairs} pairs in {diff.tasks} tasks"
         if diff.detected:
-            verdict = "better" if diff.value > 0 else "worse"
+            spec = MetricSpec(name=diff.metric, direction=self.direction)
+            verdict = "better" if spec.better(diff.value) else "worse"
             text = (
                 f"{self.variable}={self.b.name} does {verdict} than {self.a.name}:"
                 f" {diff.metric} {show(diff.value, True)} ({span}) {counted}."
@@ -81,11 +108,12 @@ class ABResult:
             if diff.smallest_detectable is not None:
                 text += (
                     " This run could detect a difference of about"
-                    f" {show(diff.smallest_detectable, False)} or more."
+                    f" {show(diff.smallest_detectable, False)} or more"
+                    f" ({diff.smallest_detectable_rule})."
                 )
         if diff.mcnemar_p is not None:
             text += f" Exact McNemar p = {diff.mcnemar_p:.3g}."
-        return text
+        return f"{text} {self.failures}"
 
 
 def _percent(value: float, signed: bool) -> str:
@@ -116,39 +144,33 @@ def _bootstrap_tasks(per_task: Sequence[float], seed: str) -> tuple[float, float
     return low, high
 
 
-def _difference(
-    metric: str,
-    pairs: dict[str, list[tuple[float, float]]],
-    *,
-    binary: bool,
-    seed: str,
-) -> Difference:
+type Pairs = dict[str, list[tuple[float, float]]]
+
+
+def _difference(metric: str, pairs: Pairs, *, binary: bool, seed: str) -> Difference:
     per_task = [statistics.fmean(b - a for a, b in task_pairs) for task_pairs in pairs.values()]
-    value = statistics.fmean(per_task)
     low, high = _bootstrap_tasks(per_task, seed)
-    count = sum(len(p) for p in pairs.values())
-    one_pair_each = all(len(p) == 1 for p in pairs.values())
     mcnemar = None
-    if binary and one_pair_each:
+    if binary and all(len(p) == 1 for p in pairs.values()):
         b_only = sum(1 for [(a, b)] in pairs.values() if b > a)
         a_only = sum(1 for [(a, b)] in pairs.values() if a > b)
         mcnemar = mcnemar_exact(b_only, a_only)
     standard_error = (high - low) / (2 * Z_95)
+    smallest, rule = None, None
     if standard_error > 0:
-        smallest: float | None = (Z_95 + Z_POWER_80) * standard_error
+        smallest, rule = (Z_95 + Z_POWER_80) * standard_error, POWER_RULE
     elif binary:
-        smallest = EXACT_DISCORDANT / len(per_task)
-    else:
-        smallest = None
+        smallest, rule = EXACT_DISCORDANT / len(per_task), EXACT_RULE
     return Difference(
         metric=metric,
-        value=value,
+        value=statistics.fmean(per_task),
         low=low,
         high=high,
-        pairs=count,
+        pairs=sum(len(p) for p in pairs.values()),
         tasks=len(per_task),
         mcnemar_p=mcnemar,
         smallest_detectable=smallest,
+        smallest_detectable_rule=rule,
     )
 
 
@@ -158,52 +180,83 @@ def _arm(
     sessions = {e.session for e in executions}
     calls = [c for c in data.calls if c.session in sessions and c.role == "agent"]
     tokens = sum(c.input_tokens for c in calls)
-    costs = [c for e in executions if (c := data.cost(e)) is not None]
+    costs = [data.cost(e) for e in executions]
     passes = sum(1 for e in executions if data.metrics.get(e.session, {}).get(primary) is True)
+    known = [c for c in costs if c is not None]
     return ArmStats(
         name=name,
         executions=len(executions),
+        failures=dict(
+            Counter(str(e.status) for e in executions if e.status is not ExecutionStatus.OK)
+        ),
         primary=primary_estimate(data, executions, primary, seed=seed),
-        cost_per_pass=sum(costs) / passes if costs and passes else None,
+        cost_per_pass=sum(known) / passes if passes and len(known) == len(costs) else None,
         p50_run_s=percentile([e.run_ns / 1e9 for e in executions], 0.5),
         cached_share=sum(c.cached_input_tokens for c in calls) / tokens if tokens else None,
     )
 
 
-def _score(data: RunData, execution: Execution, primary: str, binary: bool) -> float:
-    """Timeouts, errors and crashes score as failures, never as missing."""
-    value = data.metrics.get(execution.session, {}).get(primary)
-    if binary:
-        return 1.0 if value is True else 0.0
-    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0.0
+def _secondary(
+    complete: Sequence[tuple[str, dict[str, Execution]]],
+    a: str,
+    b: str,
+    value: Callable[[Execution], float | None],
+) -> Pairs:
+    """Pairs where both arms finished and the value exists on both sides; nothing imputed."""
+    pairs: Pairs = defaultdict(list)
+    for task, arms in complete:
+        if arms[a].status is not ExecutionStatus.OK or arms[b].status is not ExecutionStatus.OK:
+            continue
+        first, second = value(arms[a]), value(arms[b])
+        if first is not None and second is not None:
+            pairs[task].append((first, second))
+    return pairs
 
 
 def compare_arms(
-    data: RunData, *, variable: str, a: str, b: str, primary: str, seed: str
+    data: RunData,
+    *,
+    variable: str,
+    a: str,
+    b: str,
+    spec: MetricSpec,
+    seed: str,
 ) -> ABResult:
+    """Primary: every pair, with failures scored as the worst value. Cost and run time: only
+    pairs where both arms finished."""
+    primary = spec.name
     finished = data.finished()
     by_key: dict[tuple[int, str, int], dict[str, Execution]] = defaultdict(dict)
     for execution in finished:
         by_key[execution.stage, execution.task_id, execution.repeat][execution.arm] = execution
-    complete = [(key, arms) for key, arms in by_key.items() if a in arms and b in arms]
+    complete = [(key[1], arms) for key, arms in by_key.items() if a in arms and b in arms]
     binary = is_bool_metric(data, primary)
-    scores: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    costs: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    for (_, task, _), arms in complete:
-        scores[task].append(
-            (_score(data, arms[a], primary, binary), _score(data, arms[b], primary, binary))
-        )
-        cost_a, cost_b = data.cost(arms[a]), data.cost(arms[b])
-        if cost_a is not None and cost_b is not None:
-            costs[task].append((cost_a, cost_b))
+    worst = 0.0 if binary else spec.worst_value
+    if worst is None:
+        raise ValueError(f"metric {primary!r} is lower-is-better and declares no worst value")
+
+    def score(execution: Execution) -> float:
+        value = data.metrics.get(execution.session, {}).get(primary)
+        if binary:
+            return 1.0 if value is True else 0.0
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+        return worst
+
+    scores: Pairs = defaultdict(list)
+    for task, arms in complete:
+        scores[task].append((score(arms[a]), score(arms[b])))
+    costs = _secondary(complete, a, b, data.cost)
+    run_s = _secondary(complete, a, b, lambda e: e.run_ns / 1e9)
     in_arm = {name: [e for e in finished if e.arm == name] for name in (a, b)}
     return ABResult(
         variable=variable,
         a=_arm(data, a, in_arm[a], primary, f"{seed}:arm-a"),
         b=_arm(data, b, in_arm[b], primary, f"{seed}:arm-b"),
+        direction=Direction.HIGHER if binary else spec.direction,
+        worst=worst,
         primary=_difference(primary, scores, binary=binary, seed=f"{seed}:ab") if scores else None,
-        cost=_difference("cost_usd", costs, binary=False, seed=f"{seed}:ab-cost")
-        if costs
-        else None,
+        cost=_difference("cost_usd", costs, binary=False, seed=f"{seed}:cost") if costs else None,
+        run_s=_difference("run_s", run_s, binary=False, seed=f"{seed}:run") if run_s else None,
         percent=binary,
     )

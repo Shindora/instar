@@ -29,6 +29,7 @@ from instar.analyze.gate import GateResult, evaluate, parse_all
 from instar.analyze.stats import Estimate, mean, rate
 from instar.config import ConfigError
 from instar.events import ExecutionStatus
+from instar.judge import Direction, MetricSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -78,6 +79,8 @@ class Analysis:
     ab: ABResult | None = None
     could_not_run: str | None = None
     gate_error: str | None = None
+    cost_note: str | None = None
+    notes: dict[str, str] = field(default_factory=dict)
 
 
 def _numeric(value: object) -> float | None:
@@ -134,6 +137,8 @@ def _gate_metrics(
     metrics["cost_per_pass"] = Estimate(value=summary.cost_per_pass)
     metrics["p50_run_s"] = Estimate(value=summary.p50_run_s, n=summary.executions)
     metrics["p95_run_s"] = Estimate(value=summary.p95_run_s, n=summary.executions)
+    metrics["tasks_per_hour"] = Estimate(value=None)
+    metrics["shed_rate"] = Estimate(value=None)
     timed = [s for s in stages if s.hold_s is not None]
     if timed:
         peak = max(reversed(timed), key=lambda s: s.users)
@@ -141,6 +146,26 @@ def _gate_metrics(
         if peak.arrivals is not None:
             metrics["shed_rate"] = Estimate(value=peak.shed_rate, n=peak.arrivals)
     return metrics
+
+
+def _notes(data: RunData, summary: Group, metrics: dict[str, Estimate]) -> dict[str, str]:
+    """Why each metric without a value has none."""
+    cost = data.cost_note()
+    reasons = {
+        "cost_per_pass": f"cost is unknown: {cost}" if cost else "no execution passed",
+        "tasks_per_hour": "only timed stages (--hold) report tasks_per_hour",
+        "shed_rate": "only open-loop runs (--rate) shed arrivals",
+        "error_rate": "no model call reached the proxy",
+        "p50_run_s": "no execution finished",
+        "p95_run_s": "no execution finished",
+    }
+    if summary.executions == 0:
+        reasons["cost_per_pass"] = "no execution finished"
+    return {
+        name: reasons.get(name, f"no execution reported {name}")
+        for name, estimate in metrics.items()
+        if estimate.value is None
+    }
 
 
 def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = None) -> Analysis:
@@ -177,6 +202,8 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
         models=sorted(models),
         evaluation_version=versions.get("evaluation") if isinstance(versions, dict) else None,
         could_not_run=could_not_run(data),
+        cost_note=data.cost_note(),
+        notes=_notes(data, summary, metrics),
     )
     gate_metrics, against = metrics, baseline.summary if baseline else None
     comparison = baselines.compare(analysis, baseline) if baseline else None
@@ -187,7 +214,11 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
         against = {**baseline.summary, primary: baseline.primary_over(comparison.matched)}
     try:
         gates = evaluate(
-            parse_all(options.fail_if), gate_metrics, baseline=against, percent_metrics=percent
+            parse_all(options.fail_if),
+            gate_metrics,
+            baseline=against,
+            percent_metrics=percent,
+            notes=analysis.notes,
         )
         gate_error = None
     except ConfigError as exc:
@@ -202,8 +233,19 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
     ab = config.get("ab")
     arms = None
     if isinstance(ab, dict):
+        declared = config.get("metrics", {})
+        spec = declared.get(primary, {}) if isinstance(declared, dict) else {}
         arms = compare_arms(
-            data, variable=ab["var"], a=ab["a"], b=ab["b"], primary=primary, seed=seed
+            data,
+            variable=ab["var"],
+            a=ab["a"],
+            b=ab["b"],
+            spec=MetricSpec(
+                name=primary,
+                direction=Direction(spec.get("direction", "higher")),
+                worst=spec.get("worst"),
+            ),
+            seed=seed,
         )
     return copy.replace(
         analysis, gates=gates, comparison=comparison, gate_error=gate_error, ab=arms

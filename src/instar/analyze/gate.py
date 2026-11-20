@@ -45,6 +45,7 @@ class GateState(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     INCONCLUSIVE = "inconclusive"
+    NOT_EVALUATED = "not_evaluated"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -79,12 +80,15 @@ class Gate:
     def uses_baseline(self) -> bool:
         return self.number is None
 
-    def threshold(self, baseline: Mapping[str, float | None] | None) -> float:
+    def threshold(self, baseline: Mapping[str, float | None] | None) -> float | None:
+        """The number to compare with; None when the baseline has no value for the metric."""
         if self.number is not None:
             return self.number
-        before = (baseline or {}).get(self.metric)
+        if baseline is None:
+            raise ConfigError(f"gate {self.text!r} compares with a baseline, but none was given")
+        before = baseline.get(self.metric)
         if before is None:
-            raise ConfigError(f"gate {self.text!r}: the baseline has no value for {self.metric}")
+            return None
         return ADJUST[self.adjust_op](before, self.adjust) if self.adjust_op else before
 
 
@@ -93,17 +97,21 @@ class GateResult:
     text: str
     metric: str
     op: str
-    threshold: float
-    value: float
+    threshold: float | None
+    value: float | None
     low: float | None
     high: float | None
     state: GateState
     percent: bool
+    reason: str | None = None
 
     @property
     def sentence(self) -> str:
         """For example: "Fails below 83%. Now 86%, likely between 79% and 91%."."""
         show = _percent if self.percent else _number
+        rule = "Fails" if self.threshold is None else f"{WORDS[self.op]} {show(self.threshold)}."
+        if self.state is GateState.NOT_EVALUATED or self.value is None or self.threshold is None:
+            return f"{rule} Not evaluated: {self.reason}."
         now = f"Now {show(self.value)}"
         if self.low is not None and self.high is not None:
             now += f", likely between {show(self.low)} and {show(self.high)}"
@@ -112,7 +120,7 @@ class GateResult:
             GateState.FAILED: " Failed.",
             GateState.INCONCLUSIVE: " Inconclusive: the threshold lies inside the interval.",
         }[self.state]
-        return f"{WORDS[self.op]} {show(self.threshold)}. {now}.{verdict}"
+        return f"{rule} {now}.{verdict}"
 
 
 def _percent(value: float) -> str:
@@ -133,21 +141,30 @@ def evaluate(
     *,
     baseline: Mapping[str, float | None] | None,
     percent_metrics: frozenset[str],
+    notes: Mapping[str, str] | None = None,
 ) -> list[GateResult]:
+    """A metric with no value, or no baseline value, makes its gate "not evaluated": it never
+    passes silently. A metric name the run does not know is a configuration error."""
     results = []
     for gate in gates:
         if gate.metric not in metrics:
             known = ", ".join(sorted(metrics))
             raise ConfigError(f"gate {gate.text!r}: no metric {gate.metric} (have: {known})")
         estimate = metrics[gate.metric]
-        if estimate.value is None:
-            raise ConfigError(f"gate {gate.text!r}: {gate.metric} has no value in this run")
         threshold = gate.threshold(baseline)
-        failed = COMPARE[gate.op](estimate.value, threshold)
-        if gate.op in {"<", "<=", ">", ">="} and estimate.contains(threshold):
+        reason = None
+        if estimate.value is None:
+            reason = (notes or {}).get(gate.metric, f"{gate.metric} has no value in this run")
+        elif threshold is None:
+            reason = f"the baseline has no value for {gate.metric}"
+        if reason is not None or estimate.value is None or threshold is None:
+            state = GateState.NOT_EVALUATED
+        elif gate.op in {"<", "<=", ">", ">="} and estimate.contains(threshold):
             state = GateState.INCONCLUSIVE
+        elif COMPARE[gate.op](estimate.value, threshold):
+            state = GateState.FAILED
         else:
-            state = GateState.FAILED if failed else GateState.PASSED
+            state = GateState.PASSED
         results.append(
             GateResult(
                 text=gate.text,
@@ -159,12 +176,15 @@ def evaluate(
                 high=estimate.high,
                 state=state,
                 percent=gate.metric in percent_metrics,
+                reason=reason,
             )
         )
     return results
 
 
 def gate_exit_code(results: Sequence[GateResult], *, strict: bool) -> int:
-    """1 when a gate failed, or was inconclusive under --strict; else 0."""
-    failing = {GateState.FAILED, GateState.INCONCLUSIVE} if strict else {GateState.FAILED}
+    """1 when a gate failed; under --strict also when one was inconclusive or not evaluated."""
+    failing = {GateState.FAILED}
+    if strict:
+        failing |= {GateState.INCONCLUSIVE, GateState.NOT_EVALUATED}
     return 1 if any(r.state in failing for r in results) else 0

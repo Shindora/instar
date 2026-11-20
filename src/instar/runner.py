@@ -26,13 +26,14 @@ from instar.proxy.app import Proxy
 from instar.proxy.upstreams import DEFAULT_MODEL_ENV, model_url, resolve_upstreams
 from instar.server import serve_in_thread
 from instar.store import Store
-from instar.user import load_agentfile
+from instar.user import AgentfileError, load_agentfile
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Mapping, Sequence
 
     from instar.dataset import Task
     from instar.executors.base import ExecutorFn
+    from instar.proxy.pricing import Price
     from instar.user import AgentUser
 
 DEFAULT_TIMEOUT_S = 600.0
@@ -71,6 +72,8 @@ class RunOptions:
     faults: dict[str, float] = field(default_factory=dict)
     latency_s: float = 5.0
     spend_cap_usd: float | None = None
+    token_cap: int | None = None
+    prices: dict[str, Price] = field(default_factory=dict)
     keep_outputs: bool = False
     runs_dir: Path = Path("runs")
     upstreams: dict[str, str] = field(default_factory=dict)
@@ -249,6 +252,11 @@ class Runner:
         self.warnings: list[str] = []
         if options.executor == "process":
             options = self._cap_process_users(options)
+        if options.spend_cap_usd is not None and not options.prices:
+            self.warnings.append(
+                "--spend-cap counts priced calls only and no prices are configured, so it cannot"
+                " stop this run; set [tool.instar.prices] or use --token-cap"
+            )
         self.options = options
         self.run_id = new_run_id()
         self.run_dir = options.runs_dir / options.project / self.run_id
@@ -313,6 +321,8 @@ class Runner:
             fault_rates=options.faults,
             latency_s=options.latency_s,
             spend_cap_usd=options.spend_cap_usd,
+            token_cap=options.token_cap,
+            prices=options.prices,
         )
         try:
             with serve_in_thread(proxy.build_app()) as proxy_url:
@@ -320,6 +330,18 @@ class Runner:
                 with _sessionless_env(model_env if inline else {}, proxy_url):
                     user = load_agentfile(options.agentfile, options.user)
                     self.primary = user.primary
+                    specs = user.metric_specs()
+                    config["metrics"] = {
+                        name: {"direction": str(spec.direction), "worst": spec.worst_value}
+                        for name, spec in specs.items()
+                    }
+                    if options.ab is not None and specs[user.primary].worst_value is None:
+                        raise AgentfileError(
+                            f"{user.__name__}.primary {user.primary!r} is lower-is-better, so"
+                            " an A/B cannot score a failed execution: declare MetricSpec(name="
+                            f"{user.primary!r}, direction='lower', worst=...)",
+                            exit_code=2,
+                        )
                     tasks = limit(user.tasks, options.limit)
                     loop = _Loop(self, user, tasks, executor, proxy, proxy_url, model_env, store)
                     config["arms"] = _check_arms(loop, options.ab)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from instar.dataset import Task
+from instar.judge import MetricSpec
 from instar.proxy import upstreams
 
 if TYPE_CHECKING:
@@ -37,12 +38,14 @@ class AgentUser:
     """Subclass this in an agentfile: set `tasks`, write `run`, optionally write `judge`.
 
     `run` and `judge` may each be `def` or `async def`. `judge` may return a bool, a number, a
-    mapping or a dataclass; `primary` names the metric that means "resolved".
+    mapping or a dataclass; `primary` names the metric that means "resolved", and `metrics`
+    declares which way each metric is better and its worst value (see `MetricSpec`).
     """
 
     registry: ClassVar[dict[str, type[AgentUser]]] = {}
     tasks: ClassVar[Sequence[Task]] = ()
     primary: ClassVar[str] = "passed"
+    metrics: ClassVar[Sequence[MetricSpec]] = ()
 
     def __init_subclass__(cls, *, abstract: bool = False, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -58,6 +61,13 @@ class AgentUser:
     @classmethod
     def has_judge(cls) -> bool:
         return cls.judge is not AgentUser.judge
+
+    @classmethod
+    def metric_specs(cls) -> dict[str, MetricSpec]:
+        """Declared metrics, plus the primary with the defaults when it is not declared."""
+        specs = {spec.name: spec for spec in cls.metrics}
+        specs.setdefault(cls.primary, MetricSpec(name=cls.primary))
+        return specs
 
 
 class AgentfileError(Exception):

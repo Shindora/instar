@@ -14,7 +14,12 @@ if TYPE_CHECKING:
     from instar.analyze.curve import Group
     from instar.analyze.stats import Estimate
 
-ICONS = {GateState.PASSED: "✅", GateState.FAILED: "❌", GateState.INCONCLUSIVE: "⚠️"}
+ICONS = {
+    GateState.PASSED: "✅",
+    GateState.FAILED: "❌",
+    GateState.INCONCLUSIVE: "⚠️",
+    GateState.NOT_EVALUATED: "⚪",
+}
 
 
 def _seconds(value: float | None) -> str:
@@ -61,6 +66,8 @@ def markdown(a: Analysis) -> str:
         f" faults {s.faults}",
         "",
     ]
+    if a.cost_note:
+        lines += [f"Cost is unknown: {a.cost_note}.", ""]
     if a.gate_error:
         lines += [f"**The gates could not be checked:** {a.gate_error}", ""]
     if a.gates:
@@ -110,21 +117,31 @@ def markdown(a: Analysis) -> str:
             "",
             ab.sentence(),
             "",
-            f"| Arm | Executions | {a.primary} | Cost per pass | p50 run | Cached input tokens |",
-            "|---|---|---|---|---|---|",
+            ab.scoring,
+            "",
+            f"| Arm | Executions | Failures | {a.primary} | Cost per pass | p50 run |"
+            " Cached input tokens |",
+            "|---|---|---|---|---|---|---|",
         ]
         for arm in (ab.a, ab.b):
             cached = "n/a" if arm.cached_share is None else f"{arm.cached_share:.0%}"
             lines.append(
-                f"| `{arm.name}` | {arm.executions} | {_estimate(arm.primary, percent)} |"
-                f" {_usd(arm.cost_per_pass)} | {_seconds(arm.p50_run_s)} | {cached} |"
+                f"| `{arm.name}` | {arm.executions} | {_statuses(arm.failures)} |"
+                f" {_estimate(arm.primary, percent)} | {_usd(arm.cost_per_pass)} |"
+                f" {_seconds(arm.p50_run_s)} | {cached} |"
             )
-        if ab.cost is not None:
-            lines += [
-                "",
-                f"Cost per execution, b - a: {ab.cost.value:+.4f} USD"
-                f" ({ab.cost.low:+.4f} to {ab.cost.high:+.4f}).",
-            ]
+        lines.append("")
+        for label, diff, unit in (
+            ("Cost per execution", ab.cost, " USD"),
+            ("Run time", ab.run_s, " s"),
+        ):
+            if diff is None:
+                lines.append(f"{label}: no pair where both arms finished with a value.")
+            else:
+                lines.append(
+                    f"{label}, b - a: {diff.value:+.4g}{unit} ({diff.low:+.4g} to"
+                    f" {diff.high:+.4g}) over {diff.pairs} pairs where both arms finished."
+                )
         lines += [
             "",
             "Which arm runs first is seeded per task, so neither always warms a cache"
@@ -218,6 +235,8 @@ def junit(a: Analysis) -> str:
                 ET.SubElement(case, "failure", message=g.sentence)
             elif g.state is GateState.INCONCLUSIVE:
                 ET.SubElement(case, "system-out").text = g.sentence
+            elif g.state is GateState.NOT_EVALUATED:
+                ET.SubElement(case, "skipped", message=g.sentence)
     ET.indent(suites)
     return ET.tostring(suites, encoding="unicode", xml_declaration=True) + "\n"
 

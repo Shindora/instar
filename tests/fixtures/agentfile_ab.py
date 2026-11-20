@@ -6,7 +6,7 @@ import os
 
 import httpx
 
-from instar import AgentUser, Context, Task
+from instar import AgentUser, Context, Direction, MetricSpec, Task
 from tests.fixtures.agents import answer
 
 
@@ -40,3 +40,17 @@ class StubbornBot(AgentUser):
             except httpx.HTTPStatusError as exc:
                 replies.append(str(exc.response.status_code))
         return ",".join(replies)
+
+
+class StepsBot(AgentUser):
+    """A lower-is-better primary that declares no worst value."""
+
+    tasks = (Task(id="t0", data={}),)
+    primary = "steps"
+    metrics = (MetricSpec(name="steps", direction=Direction.LOWER),)
+
+    def run(self, task: Task, ctx: Context) -> str:
+        return answer(task.id)
+
+    def judge(self, task: Task, output: str) -> dict[str, float]:
+        return {"steps": 3.0}

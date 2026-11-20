@@ -81,6 +81,13 @@ def diagnose(options: RunOptions, result: RunResult) -> Diagnosis:
             " ctx.model_url(name) to the agent in inline mode, or use the process executor."
         )
 
+    if own:
+        priced = [c.cost_usd for c in own]
+        if None in priced:
+            notes = sorted({c.cost_note or "cost unknown" for c in own if c.cost_usd is None})
+            found.note(f"cost: unknown ({'; '.join(notes)}; add it under [tool.instar.prices])")
+        else:
+            found.note(f"cost: ${sum(c or 0.0 for c in priced):.6f} from the price table")
     if metrics:
         found.note("judge: " + ", ".join(f"{m.name}={m.value}" for m in metrics))
     elif execution.status is ExecutionStatus.OK:

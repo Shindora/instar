@@ -14,14 +14,13 @@ from instar.events import (
     Shed,
     StageWindow,
 )
+from instar.proxy.pricing import PRICE_HINT
 from instar.store import StoreReader
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 type MetricValue = bool | int | float | str | None
-
-COST_METRIC = "cost_usd"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -63,8 +62,16 @@ class RunData:
     def open_loop(self) -> bool:
         return self.run is not None and self.run.config.get("rate_per_s") is not None
 
+    def agent_calls(self, session: str) -> list[LLMCall]:
+        return [c for c in self.calls if c.session == session and c.role == "agent"]
+
     def cost(self, execution: Execution) -> float | None:
-        value = self.metrics.get(execution.session, {}).get(COST_METRIC)
-        return (
-            float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
-        )
+        """USD from the proxy's price table; None when any of its model calls has no price."""
+        costs = [c.cost_usd for c in self.agent_calls(execution.session)]
+        return None if any(c is None for c in costs) else sum(c or 0.0 for c in costs)
+
+    def cost_note(self) -> str | None:
+        """Why cost is unknown, naming the models with no price."""
+        unknown = [c for c in self.calls if c.role == "agent" and c.cost_usd is None]
+        notes = sorted({c.cost_note or "cost unknown" for c in unknown})
+        return f"{'; '.join(notes)} ({PRICE_HINT})" if notes else None
