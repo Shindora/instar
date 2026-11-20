@@ -25,4 +25,5 @@ def upstream_url(mock_upstream: MockUpstream) -> Iterator[str]:
 def model_env(upstream_url: str, monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("OPENAI_BASE_URL", f"{upstream_url}/v1")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", upstream_url)
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", upstream_url)
     return upstream_url

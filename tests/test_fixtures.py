@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from tests.fixtures.agents import Provider
     from tests.fixtures.mock_upstream import MockUpstream
 
-PROVIDERS: list[Provider] = ["openai", "anthropic"]
+PROVIDERS: list[Provider] = ["openai", "anthropic", "gemini"]
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -92,6 +92,10 @@ def test_cached_tokens_follow_each_provider(upstream_url: str, mock_upstream: Mo
     assert openai["usage"]["prompt_tokens_details"]["cached_tokens"] == 5
     assert anthropic["usage"]["input_tokens"] == 2
     assert anthropic["usage"]["cache_read_input_tokens"] == 5
+    contents = {"contents": [{"parts": [{"text": "a b"}]}]}
+    gemini = httpx.post(f"{upstream_url}/v1beta/models/m:generateContent", json=contents).json()
+    assert gemini["usageMetadata"]["promptTokenCount"] == 7
+    assert gemini["usageMetadata"]["cachedContentTokenCount"] == 5
 
 
 def test_responses_are_deterministic(upstream_url: str) -> None:

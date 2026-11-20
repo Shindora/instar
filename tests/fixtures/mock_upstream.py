@@ -63,10 +63,21 @@ class _Turn:
             input_tokens=sum(len(t.split()) for t in texts),
         )
 
+    @classmethod
+    def from_gemini(cls, payload: dict[str, Any], model: str) -> _Turn:
+        texts = [_text(c.get("parts")) for c in payload.get("contents") or []]
+        prompt = texts[-1] if texts else ""
+        texts.append(_text((payload.get("systemInstruction") or {}).get("parts")))
+        return cls(
+            model=model,
+            reply=f"echo: {prompt}",
+            input_tokens=sum(len(t.split()) for t in texts),
+        )
+
 
 @dataclass(kw_only=True)
 class MockUpstream:
-    """A fake model API (OpenAI and Anthropic shapes) with switches a test flips while it serves.
+    """A fake model API (OpenAI, Anthropic, Gemini) with switches a test flips while it serves.
 
     Responses are deterministic, so a test can compare bytes with and without a proxy in between.
     """
@@ -81,6 +92,7 @@ class MockUpstream:
             routes=[
                 Route("/v1/chat/completions", self._openai, methods=["POST"]),
                 Route("/v1/messages", self._anthropic, methods=["POST"]),
+                Route("/v1beta/models/{target}", self._gemini, methods=["POST"]),
             ]
         )
 
@@ -160,6 +172,45 @@ class MockUpstream:
                 }
             )
         return StreamingResponse(_anthropic_stream(turn, usage), media_type="text/event-stream")
+
+    async def _gemini(self, request: Request) -> Response:
+        payload = await self._receive(request)
+        code = self.fail_status
+        error = {"error": {"code": code, "message": "failure switch is on", "status": "MOCK"}}
+        if failure := self._failure(error):
+            return failure
+        model, _, method = request.path_params["target"].partition(":")
+        if method not in {"generateContent", "streamGenerateContent"}:
+            return JSONResponse({"error": {"code": 404, "message": method}}, 404)
+        turn = _Turn.from_gemini(payload, model)
+        if method == "generateContent":
+            return JSONResponse(self._gemini_chunk(turn, turn.reply, turn.output_tokens, True))
+        deltas = _deltas(turn.reply)
+        chunks = [
+            self._gemini_chunk(turn, delta, i + 1, i == len(deltas) - 1)
+            for i, delta in enumerate(deltas)
+        ]
+        if request.query_params.get("alt") != "sse":
+            return JSONResponse(chunks)
+        return StreamingResponse(iter([_sse(c) for c in chunks]), media_type="text/event-stream")
+
+    def _gemini_chunk(self, turn: _Turn, text: str, output: int, last: bool) -> dict[str, Any]:
+        candidate: dict[str, Any] = {"content": {"role": "model", "parts": [{"text": text}]}}
+        if last:
+            candidate["finishReason"] = "STOP"
+        prompt_tokens = turn.input_tokens + self.cached_input_tokens
+        usage = {
+            "promptTokenCount": prompt_tokens,
+            "candidatesTokenCount": output,
+            "totalTokenCount": prompt_tokens + output,
+            "cachedContentTokenCount": self.cached_input_tokens,
+        }
+        return {
+            "candidates": [{**candidate, "index": 0}],
+            "usageMetadata": usage,
+            "modelVersion": turn.model,
+            "responseId": MESSAGE_ID,
+        }
 
 
 async def _openai_stream(turn: _Turn, usage: dict[str, Any] | None) -> AsyncIterator[bytes]:

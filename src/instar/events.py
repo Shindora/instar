@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Protocol
 
 
 class CallRole(StrEnum):
@@ -33,11 +34,11 @@ class LLMCall:
     first_byte_ns: int | None = None
     fault: str | None = None
     error: str | None = None
+    traceparent: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
-    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -64,3 +65,12 @@ class Metric:
     session: str
     name: str
     value: bool | int | float | str | None
+
+
+type Event = LLMCall | Execution | Metric
+
+
+class Sink(Protocol):
+    """Where producers send events. `emit` must not block the event loop for long."""
+
+    def emit(self, event: Event) -> None: ...

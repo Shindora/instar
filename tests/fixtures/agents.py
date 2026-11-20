@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     from opentelemetry.trace import TracerProvider
 
-type Provider = Literal["openai", "anthropic"]
+type Provider = Literal["openai", "anthropic", "gemini"]
 
 MODEL = "mock-model"
 TIMEOUT_S = 30.0
@@ -26,6 +26,12 @@ def _request(
     provider: Provider, prompt: str, *, stream: bool, base_url: str | None
 ) -> tuple[str, dict[str, str], dict[str, Any]]:
     messages = [{"role": "user", "content": prompt}]
+    if provider == "gemini":
+        base = base_url if base_url is not None else os.environ["GOOGLE_GEMINI_BASE_URL"]
+        headers = {"x-goog-api-key": os.environ.get("GEMINI_API_KEY", "test-key")}
+        method = "streamGenerateContent?alt=sse" if stream else "generateContent"
+        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        return f"{base.rstrip('/')}/v1beta/models/{MODEL}:{method}", headers, body
     if provider == "openai":
         base = base_url if base_url is not None else os.environ["OPENAI_BASE_URL"]
         key = os.environ.get("OPENAI_API_KEY", "test-key")
@@ -38,24 +44,30 @@ def _request(
     return f"{base.rstrip('/')}/v1/messages", headers, body
 
 
+def _event_text(provider: Provider, event: dict[str, Any]) -> str:
+    if provider == "openai":
+        return "".join(
+            (choice.get("message") or choice.get("delta") or {}).get("content") or ""
+            for choice in event.get("choices", [])
+        )
+    if provider == "anthropic":
+        if event.get("type") == "content_block_delta":
+            return event["delta"]["text"]
+        return "".join(block.get("text", "") for block in event.get("content", []))
+    return "".join(
+        part.get("text", "")
+        for candidate in event.get("candidates", [])
+        for part in candidate["content"]["parts"]
+    )
+
+
 def _reply(provider: Provider, response: httpx.Response, *, stream: bool) -> str:
     response.raise_for_status()
     if not stream:
-        data = response.json()
-        if provider == "openai":
-            return data["choices"][0]["message"]["content"]
-        return data["content"][0]["text"]
-    parts: list[str] = []
-    for line in response.text.splitlines():
-        data = line.removeprefix("data:").strip()
-        if not line.startswith("data:") or data == "[DONE]":
-            continue
-        event = json.loads(data)
-        if provider == "openai":
-            parts.extend(choice["delta"].get("content") or "" for choice in event["choices"])
-        elif event["type"] == "content_block_delta":
-            parts.append(event["delta"]["text"])
-    return "".join(parts)
+        return _event_text(provider, response.json())
+    lines = response.text.splitlines()
+    docs = [line.removeprefix("data:").strip() for line in lines if line.startswith("data:")]
+    return "".join(_event_text(provider, json.loads(doc)) for doc in docs if doc != "[DONE]")
 
 
 def answer(
