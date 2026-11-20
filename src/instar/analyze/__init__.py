@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from instar.analyze.curve import (
     group,
     is_bool_metric,
     metric_names,
+    primary_estimate,
     stage_stats,
     time_series,
 )
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from instar.analyze.baseline import Baseline, TaskChange
+    from instar.analyze.baseline import Baseline, Comparison
     from instar.analyze.data import MetricValue
     from instar.events import Execution
     from instar.runner import RunOptions
@@ -66,9 +68,12 @@ class Analysis:
     tasks: list[TaskRow]
     metrics: dict[str, Estimate]
     percent_metrics: frozenset[str]
+    started_at: str
+    seed: int
+    models: list[str]
+    evaluation_version: str | None
     gates: list[GateResult] = field(default_factory=list)
-    changes: list[TaskChange] | None = None
-    baseline_run: str | None = None
+    comparison: Comparison | None = None
     could_not_run: str | None = None
     gate_error: str | None = None
 
@@ -150,17 +155,9 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
     metrics = _gate_metrics(data, steady, summary, stages, seed)
     percent = frozenset(n for n in metrics if is_bool_metric(data, n) or n.endswith("_rate"))
     rows = _task_rows(data, data.finished(), primary)
-    gate_error = None
-    try:
-        gates = evaluate(
-            parse_all(options.fail_if),
-            metrics,
-            baseline=baseline.summary if baseline else None,
-            percent_metrics=percent,
-        )
-    except ConfigError as exc:
-        gates, gate_error = [], str(exc)
-    return Analysis(
+    versions = config.get("versions")
+    models = {c.model for c in data.calls if c.model and c.role == "agent"}
+    analysis = Analysis(
         run_id=data.run.run_id if data.run else run_dir.name,
         project=data.run.project if data.run else run_dir.parent.name,
         primary=primary,
@@ -173,12 +170,34 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
         tasks=rows,
         metrics=metrics,
         percent_metrics=percent,
-        gates=gates,
-        changes=baselines.compare(rows, baseline) if baseline else None,
-        baseline_run=baseline.run_id if baseline else None,
+        started_at=baselines.iso(data.run.started_ns) if data.run else "",
+        seed=int(str(config.get("seed", options.seed))),
+        models=sorted(models),
+        evaluation_version=versions.get("evaluation") if isinstance(versions, dict) else None,
         could_not_run=could_not_run(data),
-        gate_error=gate_error,
     )
+    gate_metrics, against = metrics, baseline.summary if baseline else None
+    comparison = baselines.compare(analysis, baseline) if baseline else None
+    if baseline and comparison and (comparison.only_now or comparison.only_baseline):
+        matched = set(comparison.matched)
+        shared = [e for e in steady if e.task_id in matched]
+        gate_metrics = {**metrics, primary: primary_estimate(data, shared, primary, seed=seed)}
+        against = {**baseline.summary, primary: baseline.primary_over(comparison.matched)}
+    try:
+        gates = evaluate(
+            parse_all(options.fail_if), gate_metrics, baseline=against, percent_metrics=percent
+        )
+        gate_error = None
+    except ConfigError as exc:
+        gates, gate_error = [], str(exc)
+    if comparison and (comparison.only_now or comparison.only_baseline):
+        unmatched = len(comparison.only_now) + len(comparison.only_baseline)
+        for gate in parse_all(options.fail_if):
+            if gate.uses_baseline and gate.metric != primary:
+                comparison.warnings.append(
+                    f"gate {gate.text!r} compares all tasks, {unmatched} of them unmatched"
+                )
+    return copy.replace(analysis, gates=gates, comparison=comparison, gate_error=gate_error)
 
 
 __all__ = ["Analysis", "TaskRow", "analyze"]

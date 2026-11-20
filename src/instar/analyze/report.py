@@ -104,9 +104,18 @@ def markdown(a: Analysis) -> str:
             _group_line("Repeats", a.repeats, a.primary, percent),
             "",
         ]
-    if a.changes is not None:
-        regressed = [c for c in a.changes if c.regressed]
-        lines += [f"## Compared with baseline `{a.baseline_run}`", ""]
+    if (cmp := a.comparison) is not None:
+        regressed = cmp.regressed
+        lines += [f"## Compared with baseline `{cmp.baseline_run}`", ""]
+        lines.append(
+            f"{len(cmp.matched)} tasks in both runs; unmatched: {len(cmp.only_now)} only in this"
+            f" run, {len(cmp.only_baseline)} only in the baseline. Gates and changes use the"
+            " shared tasks."
+        )
+        lines.append("")
+        lines += [f"> **Warning:** {warning}" for warning in cmp.warnings]
+        if cmp.warnings:
+            lines.append("")
         if regressed:
             lines += [f"{len(regressed)} tasks regressed:", ""]
             for change in regressed:
@@ -141,8 +150,10 @@ def to_json(a: Analysis) -> str:
     document = asdict(a)
     document["gates"] = [{**asdict(g), "sentence": g.sentence} for g in a.gates]
     document["percent_metrics"] = sorted(a.percent_metrics)
-    if a.changes is not None:
-        document["changes"] = [{**asdict(c), "regressed": c.regressed} for c in a.changes]
+    if a.comparison is not None:
+        document["comparison"]["changes"] = [
+            {**asdict(c), "regressed": c.regressed} for c in a.comparison.changes
+        ]
     return json.dumps(document, indent=2, default=str) + "\n"
 
 

@@ -215,9 +215,25 @@ def _console(a: Analysis, run_dir: Path) -> None:
         print(f"breaking point: stage {a.breaking_point.stage} ({a.breaking_point.users} users)")
     for gate in a.gates:
         print(f"gate {gate.state}: {gate.text}: {gate.sentence}")
-    if a.changes is not None:
-        print(f"regressions against baseline: {sum(c.regressed for c in a.changes)}")
+    if (cmp := a.comparison) is not None:
+        unmatched = len(cmp.only_now) + len(cmp.only_baseline)
+        print(
+            f"against baseline {cmp.baseline_run}: {len(cmp.regressed)} of {len(cmp.matched)}"
+            f" shared tasks regressed, {unmatched} unmatched"
+        )
+        for warning in cmp.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
     print(f"report: {run_dir / 'report.md'}")
+    size = sum(f.stat().st_size for f in run_dir.rglob("*") if f.is_file())
+    print(f"run directory: {run_dir} ({_bytes(size)})")
+
+
+def _bytes(size: float) -> str:
+    for unit in ("B", "kB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{size:.1f} GB"
 
 
 def _run(args: argparse.Namespace) -> int:

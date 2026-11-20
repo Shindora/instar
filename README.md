@@ -24,6 +24,25 @@ OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py -u 4 --
 OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py --stages 1,4,8 --fail-if "passed < 0.8"
 ```
 
+## In CI
+
+```yaml
+- run: uv run instar run --profile smoke
+- if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: instar-report
+    path: |
+      runs/*/*/report.md
+      runs/*/*/report.json
+      runs/*/*/junit.xml
+```
+
+Upload those three files only, never the whole run directory: `logs/` holds what the agent
+printed and can contain secrets. Exit codes: `0` passed, `1` a gate failed, `2` bad usage or
+configuration, `3` the test could not run. When `GITHUB_STEP_SUMMARY` is set, the Markdown report
+is also appended to the job summary.
+
 ## Development
 
 ```bash
@@ -31,5 +50,5 @@ uv sync                    # install
 uv run ruff check .        # lint
 uv run ruff format --check .
 uv run ty check            # types
-uv run pytest -q           # tests, offline
+uv run pytest -q -n auto   # tests, offline
 ```

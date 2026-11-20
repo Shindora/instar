@@ -161,10 +161,45 @@ def test_baseline_comparison_reports_per_task_regressions(tmp_path: Path) -> Non
     assert second is not None
     report = (second / "report.md").read_text()
     data = json.loads((second / "report.json").read_text())
-    regressed = [c["task_id"] for c in data["changes"] if c["regressed"]]
+    regressed = [c["task_id"] for c in data["comparison"]["changes"] if c["regressed"]]
     assert 0 < len(regressed) < 8
     assert f"{len(regressed)} tasks regressed:" in report
     assert all(f"- `{task}`: 100% -> 0%" in report for task in regressed)
+
+
+def test_baseline_records_its_source_and_compares_shared_tasks_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, first = cli(tmp_path, "--limit", "8", "--seed", "5")
+    assert code == 0
+    assert first is not None
+    path = tmp_path / "baseline.json"
+    assert main(["baseline", "save", str(first), str(path)]) == 0
+    saved = json.loads(path.read_text())
+    assert saved["run_id"] == first.name
+    assert saved["seed"] == 5
+    assert saved["models"] == ["mock-model"]
+    assert saved["evaluation_version"]
+    assert saved["date"].endswith("+00:00")
+    assert saved["task_ids"] == sorted(saved["task_ids"]) == [f"t{i:02d}" for i in range(8)]
+
+    saved["models"], saved["evaluation_version"] = ["other-model"], "0000older"
+    path.write_text(json.dumps(saved))
+    capsys.readouterr()
+    code, second = cli(
+        tmp_path, "--limit", "10", "--baseline", str(path), "--fail-if", "passed < baseline - 0.1"
+    )
+    assert code == 0
+    assert second is not None
+    comparison = json.loads((second / "report.json").read_text())["comparison"]
+    assert len(comparison["changes"]) == 8
+    assert comparison["only_now"] == ["t08", "t09"]
+    assert comparison["only_baseline"] == []
+    err = capsys.readouterr().err
+    assert "model ids differ: baseline other-model, now mock-model" in err
+    assert "evaluation code differs: baseline 0000older" in err
+    report = (second / "report.md").read_text()
+    assert "8 tasks in both runs; unmatched: 2 only in this run, 0 only in the baseline." in report
 
 
 def test_junit_has_one_case_per_task_and_repeats_are_reported_apart(

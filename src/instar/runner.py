@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import platform
 import random
 import secrets
+import subprocess
 import tempfile
 import time
 from collections import Counter, deque
@@ -95,6 +97,25 @@ def new_run_id() -> str:
     now_ns = time.time_ns()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now_ns / 1e9))
     return f"{stamp}-{now_ns // 1_000_000 % 1000:03d}-{secrets.token_hex(3)}"
+
+
+def _git(folder: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(folder), *args], capture_output=True, text=True, timeout=10, check=True
+    )
+    return done.stdout.strip()
+
+
+def evaluation_version(agentfile: Path) -> str:
+    """The git commit holding the agentfile (`-dirty` with local changes), else its hash."""
+    folder = agentfile.resolve().parent
+    try:
+        commit = _git(folder, "rev-parse", "--short=12", "HEAD")
+        dirty = _git(folder, "status", "--porcelain", "--untracked-files=no")
+    except (OSError, subprocess.SubprocessError):
+        content = agentfile.read_bytes() if agentfile.is_file() else b""
+        return f"sha256:{hashlib.sha256(content).hexdigest()[:12]}"
+    return f"{commit}-dirty" if dirty else commit
 
 
 def new_session() -> str:
@@ -230,6 +251,7 @@ class Runner:
             "versions": {
                 "instar": metadata.version("instar"),
                 "python": platform.python_version(),
+                "evaluation": evaluation_version(self.options.agentfile),
             },
         }
 
