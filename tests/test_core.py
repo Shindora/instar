@@ -55,3 +55,14 @@ def test_registry_rejects_duplicates_and_names_known_entries() -> None:
         checks("max_steps")(2)
     with pytest.raises(KeyError, match="known: max_steps"):
         checks["missing"]
+
+
+def test_registry_accepts_the_same_definition_again() -> None:
+    hooks: Registry[object] = Registry("hook")
+
+    def first() -> None: ...
+
+    hooks("a")(first)
+    hooks("a")(first)
+    with pytest.raises(ValueError, match="duplicate hook"):
+        hooks("a")(test_registry_registers_and_looks_up)

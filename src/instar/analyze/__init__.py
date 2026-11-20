@@ -24,7 +24,7 @@ from instar.analyze.curve import (
     stage_stats,
     time_series,
 )
-from instar.analyze.data import RunData
+from instar.analyze.data import CostStatus, RunData
 from instar.analyze.gate import GateResult, evaluate, parse_all
 from instar.analyze.stats import Estimate, mean, rate
 from instar.config import ConfigError
@@ -80,6 +80,10 @@ class Analysis:
     could_not_run: str | None = None
     gate_error: str | None = None
     cost_note: str | None = None
+    cost_status: str = "exact"
+    unpriced_models: list[str] = field(default_factory=list)
+    usage_unknown: int = 0
+    token_cap: dict[str, int] | None = None
     notes: dict[str, str] = field(default_factory=dict)
 
 
@@ -134,7 +138,8 @@ def _gate_metrics(
             metrics[name] = mean(_numbers(values, name), seed=f"{seed}:{name}")
     metrics["timeout_rate"] = rate([e.status is ExecutionStatus.TIMEOUT for e in steady])
     metrics["error_rate"] = Estimate(value=summary.model_error_rate, n=summary.model_calls)
-    metrics["cost_per_pass"] = Estimate(value=summary.cost_per_pass)
+    lower_bound = data.cost_status() is CostStatus.LOWER_BOUND
+    metrics["cost_per_pass"] = Estimate(value=summary.cost_per_pass, lower_bound=lower_bound)
     metrics["p50_run_s"] = Estimate(value=summary.p50_run_s, n=summary.executions)
     metrics["p95_run_s"] = Estimate(value=summary.p95_run_s, n=summary.executions)
     metrics["tasks_per_hour"] = Estimate(value=None)
@@ -148,11 +153,19 @@ def _gate_metrics(
     return metrics
 
 
+def _token_cap(config: dict[str, object]) -> dict[str, int] | None:
+    """{"cap": N, "used": M} when the run hit its token cap."""
+    reached = config.get("token_cap_reached")
+    if not isinstance(reached, dict):
+        return None
+    return {str(k): int(v) for k, v in reached.items()}
+
+
 def _notes(data: RunData, summary: Group, metrics: dict[str, Estimate]) -> dict[str, str]:
     """Why each metric without a value has none."""
     cost = data.cost_note()
     reasons = {
-        "cost_per_pass": f"cost is unknown: {cost}" if cost else "no execution passed",
+        "cost_per_pass": f"total cost is incomplete: {cost}" if cost else "no execution passed",
         "tasks_per_hour": "only timed stages (--hold) report tasks_per_hour",
         "shed_rate": "only open-loop runs (--rate) shed arrivals",
         "error_rate": "no model call reached the proxy",
@@ -203,6 +216,10 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
         evaluation_version=versions.get("evaluation") if isinstance(versions, dict) else None,
         could_not_run=could_not_run(data),
         cost_note=data.cost_note(),
+        cost_status=str(data.cost_status()),
+        unpriced_models=data.unpriced_models(),
+        usage_unknown=data.usage_unknown(),
+        token_cap=_token_cap(config),
         notes=_notes(data, summary, metrics),
     )
     gate_metrics, against = metrics, baseline.summary if baseline else None

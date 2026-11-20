@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import re
@@ -68,6 +69,7 @@ class Proxy:
         self.fault_keys: dict[str, str] = {}
         self._calls: Counter[tuple[CallRole, str]] = Counter()
         self._client: httpx.AsyncClient | None = None
+        self._drains: set[asyncio.Task[None]] = set()
 
     def add_spend(self, cost_usd: float) -> None:
         self.spent_usd += cost_usd
@@ -84,6 +86,7 @@ class Proxy:
             ) as client:
                 self._client = client
                 yield
+                await asyncio.gather(*self._drains, return_exceptions=True)
             self._client = None
 
         return Starlette(
@@ -184,46 +187,86 @@ class Proxy:
         self, call: LLMCall, clock: int, upstream: httpx.Response, max_chunks: int | None
     ) -> AsyncIterator[bytes]:
         chunks: list[bytes] = []
-        first_byte_ns = None
-        error = None
+        first_byte: list[int] = []
+        source = upstream.aiter_raw()
+        truncated = False
         try:
-            async for chunk in upstream.aiter_raw():
-                if first_byte_ns is None:
-                    first_byte_ns = call.started_ns + time.perf_counter_ns() - clock
+            async for chunk in source:
+                if not first_byte:
+                    first_byte.append(call.started_ns + time.perf_counter_ns() - clock)
                 chunks.append(chunk)
                 yield chunk
                 if max_chunks is not None and len(chunks) >= max_chunks:
+                    truncated = True
                     break
         except BaseException as exc:
-            error = type(exc).__name__
-            raise
-        finally:
-            # ponytail: emit before any await, so a cancelled relay still records its call.
-            usage = parse_usage(call.path, b"".join(chunks))
-            cost, note = call_cost(
-                self.prices,
-                call.model,
-                input_tokens=usage.input_tokens,
-                cached_input_tokens=usage.cached_input_tokens,
-                output_tokens=usage.output_tokens,
-            )
-            if call.role is CallRole.AGENT:
-                self.tokens_used += usage.input_tokens + usage.output_tokens
-                self.spent_usd += cost or 0.0
-            finished = copy.replace(
-                call,
-                status=upstream.status_code,
-                error=error,
-                first_byte_ns=first_byte_ns,
-                usage=usage.raw,
-                input_tokens=usage.input_tokens,
-                cached_input_tokens=usage.cached_input_tokens,
-                output_tokens=usage.output_tokens,
-                cost_usd=cost,
-                cost_note=note,
-            )
-            self._emit(finished, clock)
+            # ponytail: record before any await, so a cancelled relay still records its call.
+            self._finish(call, clock, upstream, chunks, first_byte, error=type(exc).__name__)
             await upstream.aclose()
+            raise
+        if truncated:
+            # The agent's response ends here; read the rest upstream so usage is still known.
+            drain = asyncio.create_task(
+                self._drain(call, clock, upstream, source, chunks, first_byte)
+            )
+            self._drains.add(drain)
+            drain.add_done_callback(self._drains.discard)
+            return
+        self._finish(call, clock, upstream, chunks, first_byte, error=None)
+        await upstream.aclose()
+
+    async def _drain(
+        self,
+        call: LLMCall,
+        clock: int,
+        upstream: httpx.Response,
+        source: AsyncIterator[bytes],
+        chunks: list[bytes],
+        first_byte: list[int],
+    ) -> None:
+        error = None
+        try:
+            async for chunk in source:
+                chunks.append(chunk)
+        except Exception as exc:  # the agent already has its truncated reply
+            error = type(exc).__name__
+        finally:
+            self._finish(call, clock, upstream, chunks, first_byte, error=error)
+            await upstream.aclose()
+
+    def _finish(
+        self,
+        call: LLMCall,
+        clock: int,
+        upstream: httpx.Response,
+        chunks: list[bytes],
+        first_byte: list[int],
+        *,
+        error: str | None,
+    ) -> None:
+        usage = parse_usage(call.path, b"".join(chunks))
+        cost = call_cost(self.prices, call.model, upstream.status_code, usage)
+        if call.role is CallRole.AGENT:
+            self.tokens_used += usage.input_tokens + usage.output_tokens
+            self.spent_usd += cost.usd or 0.0
+        finished = copy.replace(
+            call,
+            status=upstream.status_code,
+            error=error,
+            first_byte_ns=first_byte[0] if first_byte else None,
+            usage=usage.raw,
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            cache_write_1h_tokens=usage.cache_write_1h_tokens,
+            output_tokens=usage.output_tokens,
+            response_model=usage.response_model,
+            usage_known=usage.known or upstream.status_code >= 400,
+            cost_usd=cost.usd,
+            cost_note=cost.note,
+            cost_approximate=cost.approximate,
+        )
+        self._emit(finished, clock)
 
     def _reject(self, call: LLMCall, clock: int, response: Response, fault: str | None) -> Response:
         rejected = copy.replace(call, status=response.status_code, fault=fault, cost_usd=0.0)

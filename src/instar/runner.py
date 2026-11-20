@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import hashlib
 import json
@@ -29,7 +30,7 @@ from instar.store import Store
 from instar.user import AgentfileError, load_agentfile
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Mapping, Sequence
+    from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 
     from instar.dataset import Task
     from instar.executors.base import ExecutorFn
@@ -115,6 +116,16 @@ def new_run_id() -> str:
     now_ns = time.time_ns()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now_ns / 1e9))
     return f"{stamp}-{now_ns // 1_000_000 % 1000:03d}-{secrets.token_hex(3)}"
+
+
+async def _either(*waits: Coroutine[object, object, object]) -> None:
+    """Return when the first of these finishes; cancel the rest."""
+    tasks = [asyncio.ensure_future(wait) for wait in waits]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
 
 
 def ordered_arms(arms: Sequence[Arm], *, seed: int, task_id: str, repeat: int) -> list[Arm]:
@@ -356,6 +367,8 @@ class Runner:
                             raise
         finally:
             config["primary"] = self.primary
+            if proxy.token_cap is not None and proxy.tokens_used >= proxy.token_cap:
+                config["token_cap_reached"] = {"cap": proxy.token_cap, "used": proxy.tokens_used}
             _write_json(self.run_dir / "config.json", config)
             store.emit(copy.replace(run, config=config, ended_ns=time.time_ns()))
             store.close()
@@ -385,6 +398,7 @@ class _Loop:
     alive: set[int] = field(default_factory=set)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     group: asyncio.TaskGroup | None = None
+    capped: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def drive(self) -> None:
         options = self.runner.options
@@ -394,8 +408,17 @@ class _Loop:
                 await self.open_loop(options.rate_per_s, options.hold_s)
                 return
             for index, stage in enumerate(options.shape(), start=1):
+                if self.capped.is_set():
+                    break
                 await self.run_stage(index, stage)
             self.set_target(0)
+
+    def check_cap(self) -> None:
+        """Once the token cap is reached, start no new execution."""
+        cap = self.proxy.token_cap
+        if cap is not None and self.proxy.tokens_used >= cap and not self.capped.is_set():
+            self.capped.set()
+            self.wake()
 
     def wake(self) -> None:
         self.changed.set()
@@ -443,9 +466,10 @@ class _Loop:
         await self.ramp_to(stage.users)
         steady_ns = time.time_ns()
         if isinstance(source, Drain):
-            await source.drained.wait()
+            await _either(source.drained.wait(), self.capped.wait())
         else:
-            await asyncio.sleep(stage.hold_s or 0)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.capped.wait(), stage.hold_s or 0)
         self.store.emit(
             StageWindow(
                 stage=index,
@@ -460,7 +484,7 @@ class _Loop:
     async def user(self, slot: int) -> None:
         think_s = self.runner.options.think_time_s
         try:
-            while slot < self.target:
+            while slot < self.target and not self.capped.is_set():
                 source = self.source
                 item = source.take() if source is not None else None
                 if source is None or item is None:
@@ -471,6 +495,7 @@ class _Loop:
                     await self.execute(task, repeat, arm, self.stage, self.ramping)
                 finally:
                     source.finished()
+                    self.check_cap()
                 if think_s:
                     await asyncio.sleep(think_s)
         finally:
@@ -489,6 +514,8 @@ class _Loop:
         arrivals = int(hold_s * rate_per_s - 1e-9) + 1
         assert self.group is not None
         for n in range(arrivals):
+            if self.capped.is_set():
+                break
             await asyncio.sleep(max(0.0, started + n / rate_per_s - loop.time()))
             task, repeat, arm = source.take()
             if len(running) >= cap:
@@ -497,6 +524,7 @@ class _Loop:
             execution = self.group.create_task(self.execute(task, repeat, arm, 1, False))
             running.add(execution)
             execution.add_done_callback(running.discard)
+            execution.add_done_callback(lambda _: self.check_cap())
         await asyncio.sleep(max(0.0, started + hold_s - loop.time()))
         self.store.emit(
             StageWindow(

@@ -51,6 +51,23 @@ def _group_line(name: str, group: Group, primary: str, percent: bool) -> str:
     )
 
 
+def _cost_lines(a: Analysis) -> list[str]:
+    lines = []
+    if a.cost_status == "incomplete":
+        lines.append(f"**Total cost is incomplete:** {a.cost_note}. Cost gates are not evaluated.")
+    elif a.cost_status == "lower bound":
+        lines.append(f"**Spend is a lower bound:** {a.cost_note}.")
+    elif a.cost_status == "approximate":
+        lines.append(f"Cost is approximate: {a.cost_note}.")
+    if a.token_cap:
+        cap, used = a.token_cap["cap"], a.token_cap["used"]
+        lines.append(
+            f"**Token cap reached:** {used} tokens used against a cap of {cap}"
+            f" (exceeded by {max(used - cap, 0)}); no execution started after that."
+        )
+    return [*lines, ""] if lines else []
+
+
 def markdown(a: Analysis) -> str:
     percent = a.primary in a.percent_metrics
     s = a.summary
@@ -66,8 +83,7 @@ def markdown(a: Analysis) -> str:
         f" faults {s.faults}",
         "",
     ]
-    if a.cost_note:
-        lines += [f"Cost is unknown: {a.cost_note}.", ""]
+    lines += _cost_lines(a)
     if a.gate_error:
         lines += [f"**The gates could not be checked:** {a.gate_error}", ""]
     if a.gates:

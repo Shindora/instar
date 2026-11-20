@@ -63,9 +63,14 @@ class LLMCall:
     usage: dict[str, int] = field(default_factory=dict)
     input_tokens: int = 0
     cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_write_1h_tokens: int = 0
     output_tokens: int = 0
+    response_model: str | None = None
+    usage_known: bool = True
     cost_usd: float | None = None
     cost_note: str | None = None
+    cost_approximate: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

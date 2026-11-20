@@ -240,6 +240,4 @@ def test_timed_run_prints_a_projection_from_the_last_preflight(
     assert cli(tmp_path, "-u", "1", "--hold", "0.3s")[0] == 0
     err = capsys.readouterr().err
     assert "projection from preflight" in err
-    assert (
-        "spend unknown: no price for model 'mock-model' (add it under [tool.instar.prices])" in err
-    )
+    assert "spend unknown: no price for mock-model (add it under [tool.instar.prices])" in err

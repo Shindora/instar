@@ -16,7 +16,7 @@ import pytest
 
 from instar.events import CallRole, LLMCall
 from instar.proxy.app import Proxy
-from instar.proxy.pricing import Price
+from instar.proxy.pricing import Price, find_price
 from instar.proxy.upstreams import judge_url, model_url, resolve_upstreams
 from instar.server import serve_in_thread as serve
 from instar.store import JsonlSink
@@ -384,7 +384,7 @@ async def test_prices_give_each_call_a_cost_or_say_why_it_has_none(
 ) -> None:
     mock_upstream.cached_input_tokens = 5
     sink = ListSink()
-    prices = {"m": Price(input=1.0, output=2.0, cached=0.5)}
+    prices = {"m": Price(input=1.0, output=2.0, cache_read=0.5)}
     proxy = Proxy(upstreams=direct_bases(upstream_url), sink=sink, prices=prices)
     path, payload = call_for("anthropic")
     with serve(proxy.build_app()) as url:
@@ -424,3 +424,98 @@ async def test_token_cap_stops_agent_calls_but_never_judge_calls(upstream_url: s
     assert judge.status_code == 200
     assert proxy.tokens_used == 15
     assert [c.fault for c in sink.calls] == [None, None, None, "token_cap", None]
+
+
+PRICES = {"m": Price(input=1.0, output=2.0, cache_read=0.5, cache_write=1.25, cache_write_1h=2.0)}
+
+
+async def _one_call(
+    upstream_url: str, upstream: str, *, prices: dict[str, Price], stream: bool = False
+) -> LLMCall:
+    sink = ListSink()
+    proxy = Proxy(upstreams=direct_bases(upstream_url), sink=sink, prices=prices)
+    path, payload = call_for(upstream, stream=stream)
+    with serve(proxy.build_app()) as url:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{model_url(url, 's1', upstream)}/{path}", json=payload)
+    [call] = sink.calls
+    return call
+
+
+@pytest.mark.parametrize("upstream", PROVIDERS)
+async def test_cached_tokens_are_neither_missed_nor_counted_twice(
+    upstream_url: str, mock_upstream: MockUpstream, upstream: str
+) -> None:
+    """Anthropic reports cache reads beside input_tokens; OpenAI and Gemini count them inside the
+    prompt. Two fresh tokens, five read from cache and three out cost the same everywhere."""
+    mock_upstream.cached_input_tokens = 5
+    call = await _one_call(upstream_url, upstream, prices=PRICES)
+    assert (call.input_tokens, call.cached_input_tokens, call.output_tokens) == (7, 5, 3)
+    assert call.cost_usd == pytest.approx((2 * 1.0 + 5 * 0.5 + 3 * 2.0) / 1e6)
+    assert call.cost_approximate is False
+    assert call.response_model == "m"
+
+
+async def test_cache_writes_use_their_5_minute_and_1_hour_prices(
+    upstream_url: str, mock_upstream: MockUpstream
+) -> None:
+    mock_upstream.cache_write_tokens, mock_upstream.cache_write_1h_tokens = 4, 1
+    call = await _one_call(upstream_url, "anthropic", prices=PRICES)
+    assert (call.input_tokens, call.cache_write_tokens, call.cache_write_1h_tokens) == (6, 4, 1)
+    assert call.cost_usd == pytest.approx((2 * 1.0 + 3 * 1.25 + 1 * 2.0 + 3 * 2.0) / 1e6)
+    assert call.cost_approximate is False
+
+
+async def test_a_missing_cache_price_falls_back_to_input_and_is_approximate(
+    upstream_url: str, mock_upstream: MockUpstream
+) -> None:
+    mock_upstream.cached_input_tokens = 5
+    call = await _one_call(upstream_url, "openai", prices={"m": Price(input=1.0, output=2.0)})
+    assert call.cost_usd == pytest.approx((7 * 1.0 + 3 * 2.0) / 1e6)
+    assert call.cost_approximate is True
+
+
+def test_price_lookup_prefers_exact_then_the_longest_glob() -> None:
+    exact, short, long = (
+        Price(input=1, output=1),
+        Price(input=2, output=2),
+        Price(input=3, output=3),
+    )
+    prices = {"gpt-4o": exact, "gpt-*": short, "gpt-4o-*": long}
+    assert find_price(prices, "gpt-4o") is exact
+    assert find_price(prices, "gpt-4o-mini") is long
+    assert find_price(prices, "gpt-5") is short
+    assert find_price({"gpt-4o": exact}, "gpt-4o-mini") is None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_response_without_usage_has_unknown_cost_not_zero(
+    upstream_url: str, mock_upstream: MockUpstream, stream: bool
+) -> None:
+    mock_upstream.omit_usage = True
+    call = await _one_call(upstream_url, "openai", prices=PRICES, stream=stream)
+    assert call.usage_known is False
+    assert call.cost_usd is None
+    assert call.cost_note == "usage unknown: the response ended without token usage"
+
+
+async def test_truncate_cuts_the_agent_off_but_still_records_usage(
+    upstream_url: str, mock_upstream: MockUpstream
+) -> None:
+    mock_upstream.chunk_delay_s = 0.02
+    sink = ListSink()
+    proxy = Proxy(
+        upstreams=direct_bases(upstream_url),
+        sink=sink,
+        fault_rates={"truncate": 1.0},
+        prices=PRICES,
+    )
+    path, payload = call_for("anthropic", stream=True)
+    with serve(proxy.build_app()) as url:
+        async with httpx.AsyncClient() as client:
+            full = await client.post(f"{upstream_url}/{path}", json=payload)
+            cut = await client.post(f"{model_url(url, 's1', 'anthropic')}/{path}", json=payload)
+    assert 0 < len(cut.content) < len(full.content)
+    [call] = sink.calls
+    assert (call.fault, call.usage_known, call.output_tokens) == ("truncate", True, 3)
+    assert call.cost_usd == pytest.approx((2 * 1.0 + 3 * 2.0) / 1e6)

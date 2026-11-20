@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from instar.events import (
@@ -21,6 +22,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 type MetricValue = bool | int | float | str | None
+
+
+class CostStatus(StrEnum):
+    EXACT = "exact"
+    APPROXIMATE = "approximate"
+    LOWER_BOUND = "lower bound"
+    INCOMPLETE = "incomplete"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -65,13 +73,42 @@ class RunData:
     def agent_calls(self, session: str) -> list[LLMCall]:
         return [c for c in self.calls if c.session == session and c.role == "agent"]
 
+    def _agent_calls(self) -> list[LLMCall]:
+        return [c for c in self.calls if c.role == "agent"]
+
+    def unpriced_models(self) -> list[str]:
+        """Models of agent calls the price table does not cover."""
+        unpriced = [c for c in self._agent_calls() if c.cost_usd is None and c.usage_known]
+        return sorted({c.model or "<no model in request>" for c in unpriced})
+
+    def usage_unknown(self) -> int:
+        """Agent calls whose response ended without token usage, so their cost is unknown."""
+        return sum(1 for c in self._agent_calls() if not c.usage_known)
+
+    def cost_status(self) -> CostStatus:
+        if self.unpriced_models():
+            return CostStatus.INCOMPLETE
+        if self.usage_unknown():
+            return CostStatus.LOWER_BOUND
+        if any(c.cost_approximate for c in self._agent_calls()):
+            return CostStatus.APPROXIMATE
+        return CostStatus.EXACT
+
     def cost(self, execution: Execution) -> float | None:
-        """USD from the proxy's price table; None when any of its model calls has no price."""
-        costs = [c.cost_usd for c in self.agent_calls(execution.session)]
-        return None if any(c is None for c in costs) else sum(c or 0.0 for c in costs)
+        """USD from the price table. None when a call has no price; a call that ended without
+        usage adds nothing, so the sum is then a lower bound (see `cost_status`)."""
+        calls = self.agent_calls(execution.session)
+        if any(c.cost_usd is None and c.usage_known for c in calls):
+            return None
+        return sum(c.cost_usd or 0.0 for c in calls)
 
     def cost_note(self) -> str | None:
-        """Why cost is unknown, naming the models with no price."""
-        unknown = [c for c in self.calls if c.role == "agent" and c.cost_usd is None]
-        notes = sorted({c.cost_note or "cost unknown" for c in unknown})
-        return f"{'; '.join(notes)} ({PRICE_HINT})" if notes else None
+        """Why cost is incomplete, a lower bound or approximate."""
+        status = self.cost_status()
+        if status is CostStatus.INCOMPLETE:
+            return f"no price for {', '.join(self.unpriced_models())} ({PRICE_HINT})"
+        if status is CostStatus.LOWER_BOUND:
+            return f"{self.usage_unknown()} model calls ended without token usage"
+        if status is CostStatus.APPROXIMATE:
+            return "a cache price is missing, so those tokens were priced as input"
+        return None

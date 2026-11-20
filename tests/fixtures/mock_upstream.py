@@ -81,6 +81,9 @@ class MockUpstream:
     chunk_delay_s: float = 0.0
     fail_status: int | None = None
     cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_write_1h_tokens: int = 0
+    omit_usage: bool = False
     capacity: int | None = None
     calls: int = 0
     in_flight: int = 0
@@ -105,7 +108,8 @@ class MockUpstream:
             self.in_flight += 1
             try:
                 if self.capacity is None or self.in_flight <= self.capacity:
-                    return await handler(request)
+                    response = await handler(request)
+                    return _without_usage(response) if self.omit_usage else response
                 await self._receive(request)
                 body = {"error": {"type": "overloaded", "message": "over capacity"}}
                 return JSONResponse(body, 503)
@@ -181,8 +185,13 @@ class MockUpstream:
             "input_tokens": turn.input_tokens,
             "output_tokens": turn.output_tokens,
             "cache_read_input_tokens": self.cached_input_tokens,
-            "cache_creation_input_tokens": 0,
+            "cache_creation_input_tokens": self.cache_write_tokens,
         }
+        if self.cache_write_tokens:
+            usage["cache_creation"] = {
+                "ephemeral_5m_input_tokens": self.cache_write_tokens - self.cache_write_1h_tokens,
+                "ephemeral_1h_input_tokens": self.cache_write_1h_tokens,
+            }
         if not payload.get("stream"):
             return JSONResponse(
                 {
@@ -288,3 +297,35 @@ async def _anthropic_stream(turn: _Turn, usage: dict[str, Any]) -> AsyncIterator
     }
     yield _sse(final, "message_delta")
     yield _sse({"type": "message_stop"}, "message_stop")
+
+
+def _strip(doc: object) -> object:
+    if isinstance(doc, dict):
+        return {k: _strip(v) for k, v in doc.items() if k not in {"usage", "usageMetadata"}}
+    if isinstance(doc, list):
+        return [_strip(v) for v in doc]
+    return doc
+
+
+def _strip_lines(chunk: bytes) -> bytes:
+    lines = []
+    for line in chunk.decode().split("\n"):
+        data = line.removeprefix("data: ")
+        if line.startswith("data: ") and data.startswith("{"):
+            line = f"data: {json.dumps(_strip(json.loads(data)))}"
+        lines.append(line)
+    return "\n".join(lines).encode()
+
+
+def _without_usage(response: Response) -> Response:
+    """The same response with every usage block removed, like a stream cut before its end."""
+    if isinstance(response, StreamingResponse):
+        chunks = response.body_iterator
+
+        async def stripped() -> AsyncIterator[bytes]:
+            async for chunk in chunks:
+                yield _strip_lines(chunk.encode() if isinstance(chunk, str) else bytes(chunk))
+
+        response.body_iterator = stripped()
+        return response
+    return JSONResponse(_strip(json.loads(bytes(response.body))), response.status_code)

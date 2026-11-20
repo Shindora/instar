@@ -24,14 +24,24 @@ OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py -u 4 --
 OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py --stages 1,4,8 --fail-if "passed < 0.8"
 ```
 
-Tokens are always counted by instar's proxy; `--token-cap N` stops agent model calls after N tokens.
-Dollar cost needs a price table (USD per million tokens); without one, cost reads "n/a" and says why:
+Tokens are always counted by instar's proxy; `--token-cap N` refuses agent model calls past N
+tokens and ends the run (exit code 3). Dollar cost needs a price table, in USD per million tokens.
+Keys are exact model ids or opt-in glob patterns (an exact key wins, then the longest pattern). A
+cache price left out falls back to `input` and marks the cost approximate. A model with no price
+makes the total "incomplete", and cost gates are then not evaluated:
 
 ```toml
 [tool.instar.prices."gpt-4o-mini"]
 input = 0.15
 output = 0.60
-cached = 0.075
+cache_read = 0.075
+
+[tool.instar.prices."claude-sonnet-*"]
+input = 3.0
+output = 15.0
+cache_read = 0.30
+cache_write = 3.75
+cache_write_1h = 6.0
 ```
 
 ## In CI

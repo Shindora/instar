@@ -213,6 +213,13 @@ def _console(a: Analysis, run_dir: Path) -> None:
         else:
             line += f" · {a.primary} {primary.value:.3g}"
     print(line)
+    if a.unpriced_models:
+        print(f"unpriced models: {', '.join(a.unpriced_models)}; total cost is incomplete")
+    if a.usage_unknown:
+        print(f"{a.usage_unknown} model calls ended without token usage; spend is a lower bound")
+    if a.token_cap:
+        cap, used = a.token_cap["cap"], a.token_cap["used"]
+        print(f"token cap reached: {used} of {cap} tokens (exceeded by {max(used - cap, 0)})")
     if a.breaking_point:
         print(f"breaking point: stage {a.breaking_point.stage} ({a.breaking_point.users} users)")
     for gate in a.gates:
@@ -273,6 +280,9 @@ def _run(args: argparse.Namespace) -> int:
     if analysis.gate_error:
         print(f"error: {analysis.gate_error}", file=sys.stderr)
         return 2
+    if analysis.token_cap:
+        print("error: the token cap stopped the run before every task ran", file=sys.stderr)
+        return 3
     if analysis.could_not_run:
         print(f"error: the test could not run: {analysis.could_not_run}", file=sys.stderr)
         return 3

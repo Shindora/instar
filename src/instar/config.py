@@ -140,22 +140,26 @@ def _price_number(model: str, field: str, value: object) -> float:
     return float(value)
 
 
+PRICE_FIELDS = ("input", "output", "cache_read", "cache_write", "cache_write_1h")
+
+
 def _prices(value: object) -> dict[str, Price]:
-    """`[tool.instar.prices]`: model -> { input = 3.0, output = 15.0, cached = 0.3 }, USD per 1M."""
+    """`[tool.instar.prices]`: model (or glob pattern) -> USD per 1M tokens, e.g.
+
+    "claude-sonnet-*" = { input = 3.0, output = 15.0, cache_read = 0.3, cache_write = 3.75 }
+    """
     if not isinstance(value, dict):
         raise ConfigError(f"prices must map model ids to tables: {value!r}")
     prices = {}
     for model, table in value.items():
         if not isinstance(table, dict) or not {"input", "output"} <= table.keys():
             raise ConfigError(f"prices.{model} needs input and output (USD per 1M tokens)")
-        if unknown := set(table) - {"input", "output", "cached"}:
+        if unknown := set(table) - set(PRICE_FIELDS):
             raise ConfigError(f"prices.{model} has unknown keys: {', '.join(sorted(unknown))}")
-        cached = table.get("cached")
-        prices[str(model)] = Price(
-            input=_price_number(model, "input", table["input"]),
-            output=_price_number(model, "output", table["output"]),
-            cached=None if cached is None else _price_number(model, "cached", cached),
-        )
+        numbers = {
+            name: _price_number(model, name, table[name]) for name in PRICE_FIELDS if name in table
+        }
+        prices[str(model)] = Price(**numbers)
     return prices
 
 

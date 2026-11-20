@@ -104,21 +104,23 @@ class GateResult:
     state: GateState
     percent: bool
     reason: str | None = None
+    lower_bound: bool = False
 
     @property
     def sentence(self) -> str:
         """For example: "Fails below 83%. Now 86%, likely between 79% and 91%."."""
         show = _percent if self.percent else _number
         rule = "Fails" if self.threshold is None else f"{WORDS[self.op]} {show(self.threshold)}."
-        if self.state is GateState.NOT_EVALUATED or self.value is None or self.threshold is None:
+        if self.value is None or self.threshold is None:
             return f"{rule} Not evaluated: {self.reason}."
-        now = f"Now {show(self.value)}"
+        now = f"Now {'at least ' if self.lower_bound else ''}{show(self.value)}"
         if self.low is not None and self.high is not None:
             now += f", likely between {show(self.low)} and {show(self.high)}"
         verdict = {
             GateState.PASSED: "",
             GateState.FAILED: " Failed.",
             GateState.INCONCLUSIVE: " Inconclusive: the threshold lies inside the interval.",
+            GateState.NOT_EVALUATED: f" Not evaluated: {self.reason}.",
         }[self.state]
         return f"{rule} {now}.{verdict}"
 
@@ -159,6 +161,8 @@ def evaluate(
             reason = f"the baseline has no value for {gate.metric}"
         if reason is not None or estimate.value is None or threshold is None:
             state = GateState.NOT_EVALUATED
+        elif estimate.lower_bound:
+            state, reason = _from_lower_bound(gate.op, estimate.value, threshold, gate.metric)
         elif gate.op in {"<", "<=", ">", ">="} and estimate.contains(threshold):
             state = GateState.INCONCLUSIVE
         elif COMPARE[gate.op](estimate.value, threshold):
@@ -177,9 +181,21 @@ def evaluate(
                 state=state,
                 percent=gate.metric in percent_metrics,
                 reason=reason,
+                lower_bound=estimate.lower_bound,
             )
         )
     return results
+
+
+def _from_lower_bound(
+    op: str, value: float, threshold: float, metric: str
+) -> tuple[GateState, str | None]:
+    """The true value is at least `value`: decide only what that bound alone proves."""
+    if op in {">", ">="} and COMPARE[op](value, threshold):
+        return GateState.FAILED, None
+    if op in {"<", "<="} and not COMPARE[op](value, threshold):
+        return GateState.PASSED, None
+    return GateState.NOT_EVALUATED, f"{metric} is only a lower bound"
 
 
 def gate_exit_code(results: Sequence[GateResult], *, strict: bool) -> int:

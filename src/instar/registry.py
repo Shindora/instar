@@ -15,7 +15,7 @@ class Registry[T]:
 
     def __call__(self, name: str) -> Callable[[T], T]:
         def decorator(obj: T) -> T:
-            if name in self._items:
+            if name in self._items and not _same_definition(self._items[name], obj):
                 raise ValueError(f"duplicate {self.kind}: {name!r}")
             self._items[name] = obj
             return obj
@@ -34,3 +34,9 @@ class Registry[T]:
 
     def names(self) -> list[str]:
         return sorted(self._items)
+
+
+def _same_definition(old: object, new: object) -> bool:
+    """A module imported again re-registers the same names; that is a reload, not a clash."""
+    where = ("__module__", "__qualname__")
+    return all(getattr(old, a, None) == getattr(new, a, object()) for a in where)

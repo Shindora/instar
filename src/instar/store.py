@@ -134,7 +134,7 @@ class Store:
     def __init__(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         self.directory = directory
-        self._queue: queue.SimpleQueue[Event | None] = queue.SimpleQueue()
+        self._queue: queue.SimpleQueue[Event | threading.Event | None] = queue.SimpleQueue()
         self._failures: list[str] = []
         self._closed = False
         with contextlib.closing(sqlite3.connect(directory / DB_NAME)) as db:
@@ -149,6 +149,13 @@ class Store:
         if self._closed:
             raise RuntimeError("store is closed")
         self._queue.put(event)
+
+    def flush(self, timeout_s: float = 30.0) -> None:
+        """Wait until every event emitted so far is written."""
+        written = threading.Event()
+        self._queue.put(written)
+        if not written.wait(timeout_s):
+            raise TimeoutError(f"the store did not flush within {timeout_s} s")
 
     def close(self) -> None:
         if self._closed:
@@ -181,7 +188,7 @@ class Store:
                 batch.append(self._queue.get_nowait())
             except queue.Empty:
                 break
-        events = [e for e in batch if e is not None]
+        events = [e for e in batch if e is not None and not isinstance(e, threading.Event)]
         with db:
             for event in events:
                 try:
@@ -190,7 +197,10 @@ class Store:
                     self._failures.append(f"{type(event).__name__}: {exc!r}")
         jsonl.writelines(jsonl_line(e) for e in events)
         jsonl.flush()
-        return len(events) < len(batch)
+        for marker in batch:
+            if isinstance(marker, threading.Event):
+                marker.set()
+        return None in batch
 
     @singledispatchmethod
     def _write(self, event: DataclassInstance, db: sqlite3.Connection) -> None:

@@ -21,6 +21,7 @@ class Estimate:
     low: float | None = None
     high: float | None = None
     n: int = 0
+    lower_bound: bool = False
 
     def contains(self, threshold: float) -> bool:
         if self.low is None or self.high is None:
