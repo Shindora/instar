@@ -1,0 +1,54 @@
+[project]
+name = "instar"
+version = "0.1.0"
+description = "Pre-release testing for AI agents, run locally and in CI."
+readme = "README.md"
+authors = [
+    { name = "Shindora", email = "tuanvi1792k@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "starlette>=1.10.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.45.2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.2",
+    "opentelemetry-proto>=1.45.2",
+    "opentelemetry-sdk>=1.45.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "instar[otel]",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.17.6",
+    "ty==0.0.107",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["reference", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "PTH", "RET", "ASYNC", "TC", "RUF"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.rules]
+possibly-unresolved-reference = "error"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

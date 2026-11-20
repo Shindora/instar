@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New run: instar UI reference</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+input,select,button{font:inherit}
+a{color:#2A5BD7}a:hover{color:#1E449F}
+summary{list-style:none;cursor:pointer}
+summary::-webkit-details-marker{display:none}
+details[open]>summary svg{transform:rotate(180deg)}
+</style>
+</head>
+<body>
+<div style="min-height: 100vh; background: #FFFFFF; color: #16181D; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; font-variant-numeric: tabular-nums">
+
+<header style="border-bottom: 1px solid #ECEEF1">
+<div style="max-width: 1120px; margin: 0 auto; padding: 0 24px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 32px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+<img src="../../assets/logo/instar-logo.svg" alt="instar" height="24" style="display: block">
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px">
+<a href="new_run.html" aria-current="page" style="display: inline-flex; align-items: center; min-height: 56px; padding: 0 12px; color: #16181D; font-weight: 600; text-decoration: none; box-shadow: inset 0 -2px 0 #16181D">New run</a>
+<a href="live_run.html" style="display: inline-flex; align-items: center; min-height: 56px; padding: 0 12px; color: #5C6370; text-decoration: none">Runs</a>
+</nav>
+</div>
+<span style="color: #5C6370">support-bot</span>
+</div>
+</header>
+
+<main style="max-width: 1120px; margin: 0 auto; padding: 44px 24px 64px; display: flex; flex-direction: column; gap: 40px">
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">New run</h1>
+<p style="margin: 0; color: #5C6370">Changes here apply to this run only. Saved profiles stay as they are.</p>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 44px 64px; align-items: flex-start">
+
+<div style="flex: 3 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 32px">
+
+<fieldset style="margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px">
+<legend style="padding: 0; margin-bottom: 8px; font-size: 14px; font-weight: 500">Start from</legend>
+<div style="display: flex; gap: 3px; padding: 3px; border: 1px solid #8B93A1; border-radius: 10px; max-width: 440px">
+<label style="position: relative; flex: 1 1 0; display: flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 7px; cursor: pointer; color: #16181D">
+<input type="radio" name="profile" value="smoke" style="position: absolute; opacity: 0; width: 1px; height: 1px">Smoke
+</label>
+<label style="position: relative; flex: 1 1 0; display: flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 7px; cursor: pointer; background: #16181D; color: #FFFFFF; font-weight: 500">
+<input type="radio" name="profile" value="release" checked="checked" style="position: absolute; opacity: 0; width: 1px; height: 1px">Release
+</label>
+<label style="position: relative; flex: 1 1 0; display: flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 7px; cursor: pointer; color: #16181D">
+<input type="radio" name="profile" value="custom" style="position: absolute; opacity: 0; width: 1px; height: 1px">Blank
+</label>
+</div>
+</fieldset>
+
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 20px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="stages" style="font-size: 14px; font-weight: 500">Tasks at a time</label>
+<input id="stages" type="text" value="1, 4, 8" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="repeat" style="font-size: 14px; font-weight: 500">Repeats per task</label>
+<input id="repeat" type="text" inputmode="numeric" value="3" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="cap" style="font-size: 14px; font-weight: 500">Spend cap, USD</label>
+<input id="cap" type="text" inputmode="decimal" value="20.00" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+</div>
+<p style="margin: 0; font-size: 13px; color: #5C6370">Several numbers make stages: the run does every task at 1 at a time, then at 4, then at 8.</p>
+</div>
+
+<div style="display: flex; flex-direction: column; border-bottom: 1px solid #ECEEF1">
+
+<details open="open" style="border-top: 1px solid #ECEEF1">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px">
+<span style="font-weight: 500">Faults</span>
+<span style="display: inline-flex; align-items: center; gap: 12px; color: #5C6370; font-size: 14px">Rate limits on 10% of calls<svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.2 7 9l4-3.8"></path></svg></span>
+</summary>
+<div style="display: flex; flex-direction: column; gap: 4px; padding: 0 0 24px">
+<p style="margin: 0 0 8px; font-size: 13px; color: #5C6370">Share of model calls that get each fault. The same seed gives the same faults, in both versions of a comparison too.</p>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 16px; align-items: center; min-height: 52px">
+<label for="f429">Rate limit response</label>
+<input id="f429" type="text" inputmode="numeric" value="10%" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; text-align: right; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 16px; align-items: center; min-height: 52px">
+<label for="f500">Server error</label>
+<input id="f500" type="text" inputmode="numeric" value="0%" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; text-align: right; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 16px; align-items: center; min-height: 52px">
+<label for="flat">Slow response</label>
+<input id="flat" type="text" inputmode="numeric" value="0%" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; text-align: right; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 16px; align-items: center; min-height: 52px">
+<label for="ftrunc">Response cut short</label>
+<input id="ftrunc" type="text" inputmode="numeric" value="0%" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; text-align: right; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 16px; align-items: center; min-height: 52px">
+<label for="seed">Seed</label>
+<input id="seed" type="text" inputmode="numeric" value="7" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; text-align: right; color: #16181D; background: #FFFFFF">
+</div>
+</div>
+</details>
+
+<details style="border-top: 1px solid #ECEEF1">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px">
+<span style="font-weight: 500">Compare two versions</span>
+<span style="display: inline-flex; align-items: center; gap: 12px; color: #5C6370; font-size: 14px">AGENT_VERSION, v1 against v2<svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.2 7 9l4-3.8"></path></svg></span>
+</summary>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 20px; padding: 0 0 24px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="abvar" style="font-size: 14px; font-weight: 500">Environment variable</label>
+<input id="abvar" type="text" value="AGENT_VERSION" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="arma" style="font-size: 14px; font-weight: 500">Current version</label>
+<input id="arma" type="text" value="v1" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="armb" style="font-size: 14px; font-weight: 500">New version</label>
+<input id="armb" type="text" value="v2" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+</div>
+</details>
+
+<details style="border-top: 1px solid #ECEEF1">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px">
+<span style="font-weight: 500">Gates</span>
+<span style="display: inline-flex; align-items: center; gap: 12px; color: #5C6370; font-size: 14px">2 gates, against the saved baseline<svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.2 7 9l4-3.8"></path></svg></span>
+</summary>
+<div style="display: flex; flex-direction: column; gap: 12px; padding: 0 0 24px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="gate1" style="font-size: 14px; font-weight: 500">Fail the run if</label>
+<input id="gate1" type="text" value="passed &lt; baseline - 0.05" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px">
+</div>
+<input type="text" aria-label="Second gate" value="cost_per_pass &gt; baseline * 1.2" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px">
+<button type="button" style="align-self: flex-start; min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #8B93A1; background: #FFFFFF; color: #16181D; font-weight: 500; cursor: pointer">Add gate</button>
+</div>
+</details>
+
+<details style="border-top: 1px solid #ECEEF1">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px">
+<span style="font-weight: 500">Advanced</span>
+<span style="display: inline-flex; align-items: center; gap: 12px; color: #5C6370; font-size: 14px">All tasks, 600 s timeout, one process each<svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.2 7 9l4-3.8"></path></svg></span>
+</summary>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 20px; padding: 0 0 24px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="limit" style="font-size: 14px; font-weight: 500">Task limit</label>
+<input id="limit" type="text" value="All tasks" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="timeout" style="font-size: 14px; font-weight: 500">Timeout, seconds</label>
+<input id="timeout" type="text" inputmode="numeric" value="600" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 12px; color: #16181D; background: #FFFFFF">
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<label for="executor" style="font-size: 14px; font-weight: 500">Where the agent runs</label>
+<select id="executor" style="min-height: 44px; border-radius: 8px; border: 1px solid #8B93A1; padding: 0 10px; color: #16181D; background: #FFFFFF"><option>One process each</option><option>Inline</option><option>Docker</option></select>
+</div>
+</div>
+</details>
+
+</div>
+</div>
+
+<aside style="flex: 2 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<h2 style="margin: 0; font-size: 15px; font-weight: 600">This run</h2>
+<pre style="margin: 0; padding: 16px 18px; border-radius: 10px; background: #F6F7F9; color: #16181D; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.75; overflow-x: auto">instar run --profile release \
+  --stages 1,4,8 --repeat 3 \
+  --faults http_429=0.1 --seed 7 \
+  --ab AGENT_VERSION=v1,v2</pre>
+<a href="live_run.html" style="display: flex; align-items: center; justify-content: center; min-height: 48px; border-radius: 8px; background: #2A5BD7; color: #FFFFFF; font-weight: 600; text-decoration: none">Start run</a>
+<button type="button" style="min-height: 48px; border-radius: 8px; border: 1px solid #8B93A1; background: #FFFFFF; color: #16181D; font-weight: 500; cursor: pointer">Check setup first</button>
+<p style="margin: 0; font-size: 13px; color: #5C6370">The check runs one task and confirms that the agent's model calls reach instar, before a full run spends anything.</p>
+</aside>
+
+</div>
+</main>
+</div>
+</body>
+</html>

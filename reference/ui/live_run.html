@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live run: instar UI reference</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+input,select,button{font:inherit}
+a{color:#2A5BD7}a:hover{color:#1E449F}
+</style>
+</head>
+<body>
+<div style="min-height: 100vh; background: #FFFFFF; color: #16181D; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; font-variant-numeric: tabular-nums">
+
+<header style="border-bottom: 1px solid #ECEEF1">
+<div style="max-width: 1120px; margin: 0 auto; padding: 0 24px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 32px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+<img src="../../assets/logo/instar-logo.svg" alt="instar" height="24" style="display: block">
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px">
+<a href="new_run.html" style="display: inline-flex; align-items: center; min-height: 56px; padding: 0 12px; color: #5C6370; text-decoration: none">New run</a>
+<a href="live_run.html" aria-current="page" style="display: inline-flex; align-items: center; min-height: 56px; padding: 0 12px; color: #16181D; font-weight: 600; text-decoration: none; box-shadow: inset 0 -2px 0 #16181D">Runs</a>
+</nav>
+</div>
+<span style="color: #5C6370">support-bot</span>
+</div>
+</header>
+
+<main style="max-width: 1120px; margin: 0 auto; padding: 44px 24px 64px; display: flex; flex-direction: column; gap: 44px">
+
+<div style="display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">Release run, v1 against v2</h1>
+<p style="margin: 0; color: #5C6370">Running for 12 min. Stage 2 of 3. $6.40 of $20.00 spent.</p>
+</div>
+<button type="button" style="min-height: 44px; padding: 0 18px; border-radius: 8px; border: 1px solid #D5D9E0; background: #FFFFFF; color: #16181D; font-weight: 500; cursor: pointer">Stop run</button>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: #16181D"></div>
+<span style="font-size: 13px; color: #5C6370">1 at a time, done</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: #2A5BD7"></div>
+<span style="font-size: 13px; color: #16181D; font-weight: 500">4 at a time, running</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: #ECEEF1"></div>
+<span style="font-size: 13px; color: #5C6370">8 at a time, queued</span>
+</div>
+</div>
+</div>
+
+<section aria-label="Key numbers" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 32px">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 13px; color: #5C6370">Pass rate</span>
+<span style="font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.15">86%</span>
+<span style="font-size: 13px; color: #5C6370">v1 84%, baseline 88%</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 13px; color: #5C6370">Cost per passed task</span>
+<span style="font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.15">$0.41</span>
+<span style="font-size: 13px; color: #5C6370">v1 $0.39, baseline $0.38</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 13px; color: #5C6370">Run time, p95</span>
+<span style="font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.15">74 s</span>
+<span style="font-size: 13px; color: #5C6370">v1 70 s</span>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 44px 56px; align-items: flex-start">
+
+<section style="flex: 3 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px">
+<h2 style="margin: 0; font-size: 15px; font-weight: 600">Pass rate by stage</h2>
+<div style="display: flex; gap: 16px; font-size: 13px; color: #5C6370">
+<span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 999px; background: #2A5BD7"></span>v2</span>
+<span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 999px; border: 1.5px solid #16181D"></span>v1</span>
+</div>
+</div>
+<svg role="img" aria-label="Pass rate by stage with 95 percent intervals. Stage 1: v1 88 percent, v2 90 percent. Stage 2: v1 84 percent, v2 86 percent. Stage 3 is queued. The baseline is 88 percent." viewBox="0 0 640 250" style="width: 100%; height: auto; display: block">
+<g stroke="#ECEEF1" stroke-width="1">
+<line x1="48" y1="200" x2="620" y2="200"></line>
+<line x1="48" y1="129.6" x2="620" y2="129.6"></line>
+<line x1="48" y1="59.2" x2="620" y2="59.2"></line>
+</g>
+<g font-family="Inter, system-ui, sans-serif" font-size="12" fill="#5C6370" text-anchor="end">
+<text x="38" y="204">50%</text>
+<text x="38" y="133.6">70%</text>
+<text x="38" y="63.2">90%</text>
+</g>
+<line x1="48" y1="66.2" x2="620" y2="66.2" stroke="#9AA1AC" stroke-width="1" stroke-dasharray="3 4"></line>
+<text x="620" y="84" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="12" fill="#5C6370">baseline</text>
+<g stroke="#B8BEC8" stroke-width="1.5" stroke-linecap="round">
+<line x1="138" y1="41.6" x2="138" y2="105"></line>
+<line x1="318" y1="59.2" x2="318" y2="105"></line>
+</g>
+<g fill="#FFFFFF" stroke="#16181D" stroke-width="1.6">
+<circle cx="138" cy="66.2" r="5"></circle>
+<circle cx="318" cy="80.3" r="5"></circle>
+</g>
+<g stroke="#A9BEF3" stroke-width="1.5" stroke-linecap="round">
+<line x1="162" y1="38.1" x2="162" y2="94.4"></line>
+<line x1="342" y1="55.7" x2="342" y2="97.9"></line>
+</g>
+<g fill="#2A5BD7">
+<circle cx="162" cy="59.2" r="5.5"></circle>
+<circle cx="342" cy="73.3" r="5.5"></circle>
+</g>
+<text x="510" y="134" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="12" fill="#5C6370">queued</text>
+<g font-family="Inter, system-ui, sans-serif" font-size="12" fill="#5C6370" text-anchor="middle">
+<text x="150" y="228">1 at a time</text>
+<text x="330" y="228">4 at a time</text>
+<text x="510" y="228">8 at a time</text>
+</g>
+</svg>
+</section>
+
+<section style="flex: 2 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-size: 15px; font-weight: 600">Gates</h2>
+<div style="display: flex; flex-direction: column">
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 14px 0; border-top: 1px solid #ECEEF1">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<span style="font-weight: 500">Pass rate holds</span>
+<span style="padding: 2px 10px; border-radius: 999px; background: #FFF4E0; color: #8A4B00; font-weight: 600; font-size: 12px">Too early to tell</span>
+</div>
+<span style="font-size: 13px; color: #5C6370">Fails below 83%. Now 86%, likely between 79% and 91%.</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 14px 0; border-top: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+<span style="font-weight: 500">Cost stays in range</span>
+<span style="color: #5C6370; font-size: 13px">Passing</span>
+</div>
+<span style="font-size: 13px; color: #5C6370">Fails above $0.46. Now $0.41.</span>
+</div>
+</div>
+</section>
+
+</div>
+
+<section style="display: flex; flex-direction: column; min-width: 0">
+<div aria-label="Views" style="display: flex; flex-wrap: wrap; gap: 4px 24px; border-bottom: 1px solid #ECEEF1">
+<button type="button" aria-pressed="true" style="min-height: 44px; padding: 0; border: 0; background: none; color: #16181D; font-weight: 600; cursor: pointer; box-shadow: inset 0 -2px 0 #16181D">Tasks</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0; border: 0; background: none; color: #5C6370; cursor: pointer">Checks</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0; border: 0; background: none; color: #5C6370; cursor: pointer">Faults</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0; border: 0; background: none; color: #5C6370; cursor: pointer">Model calls</button>
+<button type="button" aria-pressed="false" style="min-height: 44px; padding: 0; border: 0; background: none; color: #5C6370; cursor: pointer">Logs</button>
+</div>
+<div style="overflow-x: auto">
+<table style="width: 100%; min-width: 560px; border-collapse: collapse">
+<thead>
+<tr style="text-align: left; color: #5C6370; font-size: 13px">
+<th scope="col" style="padding: 14px 16px 14px 0; font-weight: 400; border-bottom: 1px solid #ECEEF1">Task</th>
+<th scope="col" style="padding: 14px 16px; font-weight: 400; border-bottom: 1px solid #ECEEF1">Passed, v1</th>
+<th scope="col" style="padding: 14px 16px; font-weight: 400; border-bottom: 1px solid #ECEEF1">Passed, v2</th>
+<th scope="col" style="padding: 14px 16px; font-weight: 400; border-bottom: 1px solid #ECEEF1; text-align: right">Run time</th>
+<th scope="col" style="padding: 14px 0 14px 16px; font-weight: 400; border-bottom: 1px solid #ECEEF1; text-align: right">Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="padding: 15px 16px 15px 0; border-bottom: 1px solid #ECEEF1"><a href="#task">case-021</a></td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; color: #8A4B00; font-weight: 600">0 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; color: #8A4B00; font-weight: 600">1 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">88 s</td>
+<td style="padding: 15px 0 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">$0.74</td>
+</tr>
+<tr>
+<td style="padding: 15px 16px 15px 0; border-bottom: 1px solid #ECEEF1"><a href="#task">case-007</a></td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; color: #8A4B00; font-weight: 600">1 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1">3 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">66 s</td>
+<td style="padding: 15px 0 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">$0.52</td>
+</tr>
+<tr>
+<td style="padding: 15px 16px 15px 0; border-bottom: 1px solid #ECEEF1"><a href="#task">case-012</a></td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; color: #8A4B00; font-weight: 600">2 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; color: #8A4B00; font-weight: 600">2 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">71 s</td>
+<td style="padding: 15px 0 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">$0.61</td>
+</tr>
+<tr>
+<td style="padding: 15px 16px 15px 0; border-bottom: 1px solid #ECEEF1"><a href="#task">case-015</a></td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1">3 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; color: #8A4B00; font-weight: 600">2 of 3</td>
+<td style="padding: 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">44 s</td>
+<td style="padding: 15px 0 15px 16px; border-bottom: 1px solid #ECEEF1; text-align: right">$0.33</td>
+</tr>
+<tr>
+<td style="padding: 15px 16px 15px 0"><a href="#task">case-001</a></td>
+<td style="padding: 15px 16px">3 of 3</td>
+<td style="padding: 15px 16px">3 of 3</td>
+<td style="padding: 15px 16px; text-align: right">41 s</td>
+<td style="padding: 15px 0 15px 16px; text-align: right">$0.31</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+
+</main>
+</div>
+</body>
+</html>
