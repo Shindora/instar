@@ -15,6 +15,7 @@ class ExecutionStatus(StrEnum):
     ERROR = "error"
     TIMEOUT = "timeout"
     CRASHED = "crashed"
+    CANCELLED = "cancelled"
 
 
 class SpanKind(StrEnum):
@@ -80,6 +81,7 @@ class Execution:
     judge_ns: int | None = None
     ramping: bool = False
     error: str | None = None
+    output: object = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

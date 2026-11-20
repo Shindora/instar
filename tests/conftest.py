@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.fixtures.mock_upstream import MockUpstream, serve
+from instar.server import serve_in_thread as serve
+from tests.fixtures.mock_upstream import MockUpstream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

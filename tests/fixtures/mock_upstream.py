@@ -2,20 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
-import threading
-import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import uvicorn
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Generator
+    from collections.abc import AsyncIterator
 
     from starlette.requests import Request
     from starlette.responses import Response
@@ -271,24 +266,3 @@ async def _anthropic_stream(turn: _Turn, usage: dict[str, Any]) -> AsyncIterator
     }
     yield _sse(final, "message_delta")
     yield _sse({"type": "message_stop"}, "message_stop")
-
-
-@contextmanager
-def serve(app: Starlette) -> Generator[str]:
-    """Serve an app on a free loopback port from a background thread and yield its base URL."""
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    host, port = sock.getsockname()
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", timeout_keep_alive=120))
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
-    try:
-        while not server.started:
-            if not thread.is_alive():
-                raise RuntimeError("server thread exited before it started")
-            time.sleep(0.005)
-        yield f"http://{host}:{port}"
-    finally:
-        server.should_exit = True
-        thread.join()
-        sock.close()

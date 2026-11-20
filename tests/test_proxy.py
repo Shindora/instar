@@ -17,9 +17,9 @@ import pytest
 from instar.events import CallRole, LLMCall
 from instar.proxy.app import Proxy
 from instar.proxy.upstreams import judge_url, model_url, resolve_upstreams
+from instar.server import serve_in_thread as serve
 from instar.store import JsonlSink
 from tests.fixtures.agents import answer
-from tests.fixtures.mock_upstream import serve
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping

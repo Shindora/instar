@@ -12,8 +12,14 @@ load does it take, what happens when things break, and is this version better th
 A project writes one small agentfile that calls its agent function; instar runs it, measures it and
 judges it, without changing agent code.
 
-**Status:** early development. The LLM proxy (OpenAI, Anthropic and Gemini shapes, seeded fault
-injection, spend cap) and the run store work; the runner, analysis, CI gate and web UI are next.
+**Status:** early development. Working: the LLM proxy (OpenAI, Anthropic and Gemini shapes,
+seeded fault injection, spend cap), the run store, and `instar run` / `instar doctor` with process
+and inline executors. Next: load shapes, analysis and the CI gate, A/B, telemetry, the web UI.
+
+```bash
+OPENAI_API_KEY=... uv run instar doctor -f examples/quickstart/agentfile.py
+OPENAI_API_KEY=... uv run instar run -f examples/quickstart/agentfile.py -u 4 --repeat 2
+```
 
 ## Development
 

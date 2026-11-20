@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 REQUEST_DROP = frozenset({"host", "content-length", "transfer-encoding", "connection"})
 RESPONSE_DROP = frozenset({"content-length", "transfer-encoding", "connection"})
 METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
-KEEP_ALIVE_S = 120
 MODEL_IN_PATH = re.compile(r"models/([^/:]+)")
 
 

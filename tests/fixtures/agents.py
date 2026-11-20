@@ -123,6 +123,12 @@ def raising(prompt: str, *, provider: Provider = "openai") -> str:
     raise RuntimeError("agent failed on purpose")
 
 
+def exiting(prompt: str, *, code: int = 17) -> str:
+    """Makes one call, then ends the interpreter without cleanup."""
+    answer(prompt)
+    os._exit(code)
+
+
 def import_time_answer(prompt: str, *, calls: int = 1) -> str:
     """Uses the OpenAI base URL read once when this module was imported, like many SDK clients."""
     return answer(prompt, calls=calls, base_url=IMPORT_TIME_OPENAI_BASE_URL)
