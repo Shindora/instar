@@ -37,6 +37,8 @@ class Registry[T]:
 
 
 def _same_definition(old: object, new: object) -> bool:
-    """A module imported again re-registers the same names; that is a reload, not a clash."""
+    """A module imported again re-registers the same names; that is a reload, not a clash.
+    An entry that wraps a function (`.fn`) is compared by that function."""
+    old, new = getattr(old, "fn", old), getattr(new, "fn", new)
     where = ("__module__", "__qualname__")
     return all(getattr(old, a, None) == getattr(new, a, object()) for a in where)

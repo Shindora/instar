@@ -59,6 +59,10 @@ def _cost_lines(a: Analysis) -> list[str]:
         lines.append(f"**Spend is a lower bound:** {a.cost_note}.")
     elif a.cost_status == "approximate":
         lines.append(f"Cost is approximate: {a.cost_note}.")
+    if a.agent_cost_usd is not None:
+        lines.append(f"Agent-reported cost (from its own llm spans): ${a.agent_cost_usd:.6f}.")
+    if a.cost_mismatch:
+        lines.append(f"> **Warning:** {a.cost_mismatch}.")
     if a.token_cap:
         cap, used = a.token_cap["cap"], a.token_cap["used"]
         lines.append(
@@ -115,6 +119,24 @@ def markdown(a: Analysis) -> str:
         else:
             lines.append("No breaking point in these stages.")
         lines.append("")
+    if a.checks:
+        lines += [
+            "## Behaviour checks",
+            "",
+            "| Check | Passed | Failed | Not evaluated | Failing tasks |",
+            "|---|---|---|---|---|",
+        ]
+        for c in a.checks:
+            failing = ", ".join(f"`{t}`" for t in c.failing_tasks) or "none"
+            lines.append(
+                f"| `{c.name}` | {c.passed} | {c.failed} | {c.not_evaluated} | {failing} |"
+            )
+        reasons = [
+            f"- `{c.name}` not evaluated: {'; '.join(c.reasons)}" for c in a.checks if c.reasons
+        ]
+        lines += ["", *reasons, ""] if reasons else [""]
+    if a.unjoined_spans:
+        lines += [f"{a.unjoined_spans} spans could not be joined to an execution.", ""]
     if a.repeats is not None:
         lines += [
             "## First attempts and repeats",

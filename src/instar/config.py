@@ -176,6 +176,12 @@ def _table(value: object) -> dict[str, str]:
     return {str(k): str(v) for k, v in value.items()}
 
 
+def _settings(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"[checks] maps check names to settings: {value!r}")
+    return {str(k): v for k, v in value.items()}
+
+
 def _bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -221,6 +227,10 @@ OPTIONS: dict[str, tuple[str, Callable[[object], object]]] = {
     "upstreams": ("upstreams", _table),
     "model-env": ("model_env", _table),
     "ab": ("ab", _ab),
+    "telemetry-map": ("telemetry_map", lambda v: Path(str(v))),
+    "checks": ("checks", _settings),
+    "span-grace": ("span_grace_s", parse_duration),
+    "otel-export": ("otel_export", str),
 }
 SHAPE_FLAGS = frozenset({"users", "hold"})
 

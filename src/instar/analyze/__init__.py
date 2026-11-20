@@ -28,8 +28,12 @@ from instar.analyze.data import CostStatus, RunData
 from instar.analyze.gate import GateResult, evaluate, parse_all
 from instar.analyze.stats import Estimate, mean, rate
 from instar.config import ConfigError
-from instar.events import ExecutionStatus
+from instar.events import ExecutionStatus, SpanKind
 from instar.judge import Direction, MetricSpec
+from instar.telemetry.normalise import TelemetryMap
+from instar.telemetry.root import split_phases
+
+COST_TOLERANCE = 0.10
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -54,6 +58,16 @@ class TaskRow:
     def failing(self) -> bool:
         low_primary = self.primary is not None and self.primary < 1
         return low_primary or any(status != "ok" for status in self.statuses)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CheckSummary:
+    name: str
+    passed: int
+    failed: int
+    not_evaluated: int
+    failing_tasks: list[str]
+    reasons: list[str]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -84,6 +98,10 @@ class Analysis:
     unpriced_models: list[str] = field(default_factory=list)
     usage_unknown: int = 0
     token_cap: dict[str, int] | None = None
+    checks: list[CheckSummary] = field(default_factory=list)
+    agent_cost_usd: float | None = None
+    cost_mismatch: str | None = None
+    unjoined_spans: int = 0
     notes: dict[str, str] = field(default_factory=dict)
 
 
@@ -153,6 +171,57 @@ def _gate_metrics(
     return metrics
 
 
+def _check_summaries(data: RunData) -> list[CheckSummary]:
+    task_of = {e.session: e.task_id for e in data.executions}
+    summaries = []
+    for name in sorted({r.check for r in data.check_results}):
+        results = [r for r in data.check_results if r.check == name]
+        status = Counter(str(r.status) for r in results)
+        summaries.append(
+            CheckSummary(
+                name=name,
+                passed=status["passed"],
+                failed=status["failed"],
+                not_evaluated=status["not_evaluated"],
+                failing_tasks=sorted(
+                    {task_of.get(r.session, r.session) for r in results if r.status == "failed"}
+                ),
+                reasons=sorted({r.detail or "" for r in results if r.status == "not_evaluated"})[
+                    :3
+                ],
+            )
+        )
+    return summaries
+
+
+def _agent_cost(data: RunData, executions: list[Execution], mapping: TelemetryMap) -> float | None:
+    """Cost the agent's own spans report: llm spans only, never the judge's, never agent or
+    chain spans (frameworks repeat the total there). None without a mapped cost attribute."""
+    if mapping.cost_attribute is None:
+        return None
+    total, seen = 0.0, False
+    for execution in executions:
+        spans = [s for s in data.spans if s.session == execution.session]
+        agent, _ = split_phases(spans, execution.session)
+        for span in agent:
+            cost = mapping.cost_usd(span.attributes)
+            if span.kind is SpanKind.LLM and cost is not None:
+                total, seen = total + cost, True
+    return total if seen else None
+
+
+def _mismatch(priced: float | None, reported: float | None, status: CostStatus) -> str | None:
+    if priced is None or reported is None or status is CostStatus.LOWER_BOUND:
+        return None
+    larger = max(priced, reported)
+    if larger == 0 or abs(priced - reported) / larger <= COST_TOLERANCE:
+        return None
+    return (
+        f"agent-reported cost ${reported:.6f} differs from the priced cost ${priced:.6f} by"
+        f" {abs(priced - reported) / larger:.0%}: model calls may be bypassing the proxy"
+    )
+
+
 def _token_cap(config: dict[str, object]) -> dict[str, int] | None:
     """{"cap": N, "used": M} when the run hit its token cap."""
     reached = config.get("token_cap_reached")
@@ -195,6 +264,9 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
     metrics = _gate_metrics(data, steady, summary, stages, seed)
     percent = frozenset(n for n in metrics if is_bool_metric(data, n) or n.endswith("_rate"))
     rows = _task_rows(data, data.finished(), primary)
+    tables = config.get("telemetry")
+    mapping = TelemetryMap.from_tables(tables) if isinstance(tables, dict) else TelemetryMap()
+    agent_cost = _agent_cost(data, steady, mapping)
     versions = config.get("versions")
     models = {c.model for c in data.calls if c.model and c.role == "agent"}
     analysis = Analysis(
@@ -220,6 +292,10 @@ def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = N
         unpriced_models=data.unpriced_models(),
         usage_unknown=data.usage_unknown(),
         token_cap=_token_cap(config),
+        checks=_check_summaries(data),
+        agent_cost_usd=agent_cost,
+        cost_mismatch=_mismatch(summary.cost_usd, agent_cost, data.cost_status()),
+        unjoined_spans=sum(1 for span in data.spans if not span.session),
         notes=_notes(data, summary, metrics),
     )
     gate_metrics, against = metrics, baseline.summary if baseline else None

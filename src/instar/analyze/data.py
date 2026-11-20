@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from instar.events import (
+    CheckResult,
     Execution,
     ExecutionStatus,
     LLMCall,
@@ -13,6 +14,7 @@ from instar.events import (
     Metric,
     Run,
     Shed,
+    Span,
     StageWindow,
 )
 from instar.proxy.pricing import PRICE_HINT
@@ -42,6 +44,8 @@ class RunData:
     stages: list[StageWindow]
     loads: list[Load]
     sheds: list[Shed]
+    spans: list[Span] = field(default_factory=list)
+    check_results: list[CheckResult] = field(default_factory=list)
 
     @classmethod
     def load(cls, run_dir: Path) -> RunData:
@@ -59,6 +63,8 @@ class RunData:
                 stages=reader.select(StageWindow),
                 loads=reader.select(Load),
                 sheds=reader.select(Shed),
+                spans=reader.select(Span),
+                check_results=reader.select(CheckResult),
             )
         finally:
             reader.close()

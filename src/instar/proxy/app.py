@@ -20,7 +20,7 @@ from instar.proxy.pricing import call_cost
 from instar.proxy.usage import parse_usage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+    from collections.abc import AsyncGenerator, AsyncIterator, Mapping, MutableMapping
 
     from starlette.requests import Request
 
@@ -54,6 +54,7 @@ class Proxy:
         spend_cap_usd: float | None = None,
         token_cap: int | None = None,
         prices: Mapping[str, Price] | None = None,
+        traces: MutableMapping[str, str] | None = None,
     ) -> None:
         self.upstreams = dict(upstreams)
         self.sink = sink
@@ -66,6 +67,7 @@ class Proxy:
         self.token_cap = token_cap
         self.tokens_used = 0
         self.prices = dict(prices or {})
+        self.traces = traces if traces is not None else {}
         self.fault_keys: dict[str, str] = {}
         self._calls: Counter[tuple[CallRole, str]] = Counter()
         self._client: httpx.AsyncClient | None = None
@@ -119,6 +121,10 @@ class Proxy:
             traceparent=request.headers.get("traceparent"),
         )
         clock = time.perf_counter_ns()
+        if session and call.traceparent:
+            parts = call.traceparent.split("-")
+            if len(parts) == 4 and len(parts[1]) == 32:
+                self.traces.setdefault(parts[1], session)
 
         base_url = self.upstreams.get(call.upstream)
         if base_url is None:

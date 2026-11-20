@@ -16,7 +16,9 @@ judges it, without changing agent code.
 seeded fault injection, spend cap), the run store, `instar run` / `instar doctor` with process
 and inline executors, load shapes (stages, timed holds, ramps, open-loop arrivals), the load curve
 and breaking point, baselines, `--fail-if` gates, Markdown/JSON/JUnit reports, and A/B runs
-(`--ab AGENT_VERSION=v1,v2`) with a paired comparison over tasks. Next: telemetry, the web UI.
+(`--ab AGENT_VERSION=v1,v2`) with a paired comparison over tasks, and an OTLP receiver whose spans
+drive behaviour checks (`max_steps`, `no_tool_loop`, `forbidden_tools`, `max_llm_calls`,
+`backoff_after_429`, `cost_cap`, `terminated`). Next: importers, Docker, the web UI.
 
 ```bash
 OPENAI_API_KEY=... uv run instar doctor -f examples/quickstart/agentfile.py

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from instar.events import ExecutionStatus
 from instar.judge import as_metrics
 from instar.registry import Registry
+from instar.telemetry.root import phase
 from instar.user import Context
 
 if TYPE_CHECKING:
@@ -96,7 +97,8 @@ async def execute(user: type[AgentUser], task: Task, ctx: Context, *, keep_outpu
     agent = user()
     clock = time.perf_counter_ns()
     try:
-        output = await call_user(agent.run, task, ctx)
+        with phase(ctx.session, "run"):
+            output = await call_user(agent.run, task, ctx)
     except Exception:
         return Outcome(
             status=ExecutionStatus.ERROR,
@@ -109,7 +111,8 @@ async def execute(user: type[AgentUser], task: Task, ctx: Context, *, keep_outpu
         return Outcome(status=ExecutionStatus.OK, run_ns=run_ns, output=kept)
     clock = time.perf_counter_ns()
     try:
-        metrics = as_metrics(await call_user(agent.judge, task, output))
+        with phase(ctx.session, "judge"):
+            metrics = as_metrics(await call_user(agent.judge, task, output))
     except Exception:
         return Outcome(
             status=ExecutionStatus.ERROR,

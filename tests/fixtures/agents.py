@@ -140,19 +140,37 @@ async def traced_answer(
     tools: Sequence[str] = ("lookup",),
     provider: Provider = "openai",
     tracer_provider: TracerProvider | None = None,
+    cost_usd: float | None = None,
 ) -> str:
-    """Emits GenAI spans: one agent span, then a tool span and a model span per tool."""
+    """Emits GenAI spans: one agent span, then a tool span and a model span per tool.
+
+    Tool spans carry their arguments and model spans carry the prompt, as real frameworks do;
+    instar must store neither. With `cost_usd`, each model span reports that cost under
+    `test.cost_usd`, and the agent span repeats the total there, as frameworks do.
+    """
     tracer = trace.get_tracer(__name__, tracer_provider=tracer_provider)
     agent_attrs = {"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "mock-agent"}
     reply = ""
-    with tracer.start_as_current_span("invoke_agent mock-agent", attributes=agent_attrs):
+    with tracer.start_as_current_span("invoke_agent mock-agent", attributes=agent_attrs) as agent:
         for tool in tools:
-            tool_attrs = {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": tool}
+            tool_attrs = {
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": tool,
+                "gen_ai.tool.call.arguments": json.dumps({"query": prompt}),
+            }
             with tracer.start_as_current_span(f"execute_tool {tool}", attributes=tool_attrs):
                 pass
-            chat_attrs = {"gen_ai.operation.name": "chat", "gen_ai.request.model": MODEL}
+            chat_attrs: dict[str, str | float] = {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": MODEL,
+                "gen_ai.input.messages": json.dumps([{"role": "user", "content": prompt}]),
+            }
+            if cost_usd is not None:
+                chat_attrs["test.cost_usd"] = cost_usd
             with tracer.start_as_current_span(
                 f"chat {MODEL}", kind=trace.SpanKind.CLIENT, attributes=chat_attrs
             ):
                 reply = await answer_async(prompt, provider=provider)
+        if cost_usd is not None:
+            agent.set_attribute("test.cost_usd", cost_usd * len(tools))
     return reply

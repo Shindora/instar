@@ -4,9 +4,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from instar.checks import SPANS, checks
+from instar.events import CheckResult, ExecutionStatus, LLMCall, Metric, Span
 from instar.events import Execution as ExecutionEvent
-from instar.events import ExecutionStatus, LLMCall, Metric
 from instar.store import StoreReader
+from instar.telemetry.receiver import available
+from instar.telemetry.root import split_phases
 
 if TYPE_CHECKING:
     from instar.runner import RunOptions, RunResult
@@ -31,6 +34,32 @@ class Diagnosis:
         return 3 if self.problems else 0
 
 
+def _telemetry(
+    found: Diagnosis, session: str, spans: list[Span], verdicts: list[CheckResult]
+) -> None:
+    """Which spans arrived, which checks could therefore run, and what they found."""
+    span_checks = sorted(name for name in checks.names() if SPANS in checks[name].needs)
+    agent, judge = split_phases([s for s in spans if s.session == session], session)
+    if not available():
+        found.note("telemetry: spans cannot be received without the otel extra (instar[otel])")
+    elif agent:
+        kinds = ", ".join(
+            f"{k} {n}" for k, n in sorted(Counter(str(s.kind) for s in agent).items())
+        )
+        found.note(
+            f"spans for this execution: {kinds}; judge spans kept out of checks: {len(judge)}"
+        )
+    else:
+        found.note(
+            "no spans arrived for this execution: span checks"
+            f" ({', '.join(span_checks)}) report not evaluated"
+        )
+    unjoined = sum(1 for s in spans if not s.session)
+    found.note(f"spans not joined to any execution: {unjoined}")
+    for verdict in sorted(verdicts, key=lambda v: v.check):
+        found.note(f"check {verdict.check}: {verdict.status} ({verdict.detail})")
+
+
 def _no_calls_hint(executor: str) -> str:
     if executor == "inline":
         return "In inline mode, pass ctx.model_url(name) to the agent's model client."
@@ -48,6 +77,8 @@ def diagnose(options: RunOptions, result: RunResult) -> Diagnosis:
         [execution] = reader.select(ExecutionEvent)
         calls = reader.select(LLMCall)
         metrics = reader.select(Metric, session=execution.session)
+        spans = reader.select(Span)
+        verdicts = reader.select(CheckResult, session=execution.session)
     finally:
         reader.close()
     run_s = execution.run_ns / 1e9
@@ -92,6 +123,8 @@ def diagnose(options: RunOptions, result: RunResult) -> Diagnosis:
         found.note("judge: " + ", ".join(f"{m.name}={m.value}" for m in metrics))
     elif execution.status is ExecutionStatus.OK:
         found.note("judge: none (the agentfile defines no judge)")
+
+    _telemetry(found, execution.session, spans, verdicts)
 
     if execution.status is ExecutionStatus.TIMEOUT:
         found.problem(f"the task did not finish within timeout_s = {options.timeout_s:g} s")

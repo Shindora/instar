@@ -19,14 +19,34 @@ from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from instar.checks import Evidence
+from instar.checks import enabled as enabled_checks
+from instar.checks import evaluate as evaluate_checks
 from instar.config import AB, Stage
 from instar.dataset import limit
-from instar.events import Execution, ExecutionStatus, Load, Metric, Run, Shed, StageWindow
+from instar.events import (
+    CallRole,
+    CheckResult,
+    Execution,
+    ExecutionStatus,
+    LLMCall,
+    Load,
+    Metric,
+    Run,
+    Shed,
+    Span,
+    StageWindow,
+)
 from instar.executors import ExecutionSpec, Outcome, executors
 from instar.proxy.app import Proxy
 from instar.proxy.upstreams import DEFAULT_MODEL_ENV, model_url, resolve_upstreams
 from instar.server import serve_in_thread
-from instar.store import Store
+from instar.store import Store, StoreReader
+from instar.telemetry import semconv
+from instar.telemetry.export import ExportingSink
+from instar.telemetry.normalise import TelemetryMap
+from instar.telemetry.receiver import Receiver, available
+from instar.telemetry.root import split_phases
 from instar.user import AgentfileError, load_agentfile
 
 if TYPE_CHECKING:
@@ -85,6 +105,10 @@ class RunOptions:
     interval_s: float = 30.0
     breaking_p95: float = 2.0
     ab: AB | None = None
+    telemetry_map: Path | None = None
+    checks: dict[str, object] = field(default_factory=dict)
+    span_grace_s: float = 0.5
+    otel_export: str | None = None
     kind: str = "run"
 
     def arms(self) -> tuple[Arm, ...]:
@@ -182,14 +206,14 @@ def _resource_attributes(session: str) -> str:
 
 
 @contextmanager
-def _sessionless_env(model_env: Mapping[str, str], proxy_url: str) -> Generator[None]:
-    """Point model variables at the proxy for the whole run, without a session.
+def _run_env(values: Mapping[str, str]) -> Generator[None]:
+    """Set variables in the runner's own process for the whole run, never per execution.
 
-    Only for the inline executor: an agent that reads them still reaches the proxy, and
-    `doctor` can say its calls arrived without a session. This is run-wide, never per execution.
+    Only for the inline executor: model variables point at the proxy without a session, so an
+    agent that reads them still reaches the proxy and `doctor` can say its calls carried none.
     """
-    saved = {var: os.environ.get(var) for var in model_env}
-    os.environ.update({var: f"{proxy_url}/{name}" for var, name in model_env.items()})
+    saved = {var: os.environ.get(var) for var in values}
+    os.environ.update(values)
     try:
         yield
     finally:
@@ -198,6 +222,15 @@ def _sessionless_env(model_env: Mapping[str, str], proxy_url: str) -> Generator[
                 os.environ.pop(var, None)
             else:
                 os.environ[var] = value
+
+
+@contextmanager
+def _serve_receiver(receiver: Receiver | None) -> Generator[str | None]:
+    if receiver is None:
+        yield None
+        return
+    with serve_in_thread(receiver.build_app()) as url:
+        yield url
 
 
 class Source(Protocol):
@@ -315,7 +348,10 @@ class Runner:
         options = self.options
         executor = executors[options.executor]
         store = Store(self.run_dir)
+        exporter = ExportingSink(store, options.otel_export) if options.otel_export else None
+        mapping = TelemetryMap.load(options.telemetry_map)
         config = self._config()
+        config["telemetry"] = mapping.to_tables()
         _write_json(self.run_dir / "config.json", config)
         run = Run(run_id=self.run_id, project=options.project, started_ns=time.time_ns())
         store.emit(copy.replace(run, config=config))
@@ -325,9 +361,12 @@ class Runner:
             for var, name in {**DEFAULT_MODEL_ENV, **options.model_env}.items()
             if name in upstreams
         }
+        traces: dict[str, str] = {}
+        receiver = Receiver(sink=store, mapping=mapping, traces=traces) if available() else None
         proxy = Proxy(
             upstreams=upstreams,
-            sink=store,
+            sink=exporter or store,
+            traces=traces,
             seed=options.seed,
             fault_rates=options.faults,
             latency_s=options.latency_s,
@@ -336,9 +375,21 @@ class Runner:
             prices=options.prices,
         )
         try:
-            with serve_in_thread(proxy.build_app()) as proxy_url:
+            with (
+                serve_in_thread(proxy.build_app()) as proxy_url,
+                _serve_receiver(receiver) as receiver_url,
+            ):
+                otel_env = (
+                    {
+                        semconv.TRACES_ENDPOINT: f"{receiver_url}/v1/traces",
+                        semconv.TRACES_PROTOCOL: "http/protobuf",
+                    }
+                    if receiver_url
+                    else {}
+                )
+                run_env = {var: f"{proxy_url}/{name}" for var, name in model_env.items()}
                 inline = options.executor == "inline"
-                with _sessionless_env(model_env if inline else {}, proxy_url):
+                with _run_env({**run_env, **otel_env} if inline else {}):
                     user = load_agentfile(options.agentfile, options.user)
                     self.primary = user.primary
                     specs = user.metric_specs()
@@ -353,8 +404,15 @@ class Runner:
                             f"{user.primary!r}, direction='lower', worst=...)",
                             exit_code=2,
                         )
+                    try:
+                        settings = enabled_checks(options.checks)
+                    except (KeyError, ValueError) as exc:
+                        raise AgentfileError(f"[checks]: {exc}", exit_code=2) from None
+                    config["checks"] = settings
                     tasks = limit(user.tasks, options.limit)
                     loop = _Loop(self, user, tasks, executor, proxy, proxy_url, model_env, store)
+                    loop.otel_env, loop.traces = otel_env, traces
+                    loop.settings, loop.mapping = settings, mapping
                     config["arms"] = _check_arms(loop, options.ab)
                     _write_json(self.run_dir / "config.json", config)
                     self._shape = asyncio.create_task(loop.drive())
@@ -369,9 +427,17 @@ class Runner:
             config["primary"] = self.primary
             if proxy.token_cap is not None and proxy.tokens_used >= proxy.token_cap:
                 config["token_cap_reached"] = {"cap": proxy.token_cap, "used": proxy.tokens_used}
+            if receiver is not None:
+                config["telemetry_received"] = {
+                    "spans": receiver.received,
+                    "unjoined": receiver.unjoined,
+                    "rejected": receiver.rejected,
+                }
             _write_json(self.run_dir / "config.json", config)
             store.emit(copy.replace(run, config=config, ended_ns=time.time_ns()))
             store.close()
+            if exporter is not None:
+                exporter.close()
         return RunResult(
             run_id=self.run_id,
             run_dir=self.run_dir,
@@ -399,6 +465,10 @@ class _Loop:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     group: asyncio.TaskGroup | None = None
     capped: asyncio.Event = field(default_factory=asyncio.Event)
+    otel_env: dict[str, str] = field(default_factory=dict)
+    traces: dict[str, str] = field(default_factory=dict)
+    settings: dict[str, object] = field(default_factory=dict)
+    mapping: TelemetryMap = field(default_factory=TelemetryMap)
 
     async def drive(self) -> None:
         options = self.runner.options
@@ -544,13 +614,14 @@ class _Loop:
     def overlay(self, session: str, arm: Arm) -> dict[str, str]:
         """The variables instar sets for one execution, on top of the inherited environment."""
         env = {var: model_url(self.proxy_url, session, up) for var, up in self.model_env.items()}
-        env["OTEL_RESOURCE_ATTRIBUTES"] = _resource_attributes(session)
-        return {**env, **arm.env}
+        env[semconv.RESOURCE_ATTRIBUTES] = _resource_attributes(session)
+        return {**env, **self.otel_env, **arm.env}
 
     async def execute(self, task: Task, repeat: int, arm: Arm, stage: int, ramping: bool) -> None:
         options = self.runner.options
         session = new_session()
         self.proxy.fault_keys[session] = f"{task.id}:{repeat}"
+        self.traces[session.partition("-")[0]] = session
         env = self.overlay(session, arm)
         started_ns = time.time_ns()
         clock = time.perf_counter_ns()
@@ -576,7 +647,34 @@ class _Loop:
                     session, task, repeat, arm, stage, ramping, started_ns, clock, cancelled
                 )
                 raise
-        self.record(session, task, repeat, arm, stage, ramping, started_ns, clock, outcome)
+        execution = self.record(
+            session, task, repeat, arm, stage, ramping, started_ns, clock, outcome
+        )
+        if self.settings and self.group is not None:
+            self.group.create_task(self.check_later(execution))
+
+    async def check_later(self, execution: Execution) -> None:
+        """Spans can trail the execution a little; wait, then judge it from the store."""
+        await asyncio.sleep(self.runner.options.span_grace_s)
+        for result in await asyncio.to_thread(self.verdicts, execution):
+            self.store.emit(result)
+
+    def verdicts(self, execution: Execution) -> list[CheckResult]:
+        self.store.flush()
+        reader = StoreReader(self.runner.run_dir)
+        try:
+            calls = reader.select(LLMCall, session=execution.session)
+            spans = reader.select(Span, session=execution.session)
+        finally:
+            reader.close()
+        agent_spans, _ = split_phases(spans, execution.session)
+        evidence = Evidence(
+            execution=execution,
+            calls=sorted((c for c in calls if c.role is CallRole.AGENT), key=lambda c: c.index),
+            spans=sorted(agent_spans, key=lambda s: s.started_ns),
+            tool_name_attribute=self.mapping.tool_name,
+        )
+        return evaluate_checks(evidence, self.settings)
 
     def record(
         self,
@@ -589,24 +687,24 @@ class _Loop:
         started_ns: int,
         clock: int,
         outcome: Outcome,
-    ) -> None:
+    ) -> Execution:
         self.runner.statuses[outcome.status] += 1
-        self.store.emit(
-            Execution(
-                session=session,
-                task_id=task.id,
-                arm=arm.name,
-                repeat=repeat,
-                stage=stage,
-                status=outcome.status,
-                started_ns=started_ns,
-                ended_ns=started_ns + time.perf_counter_ns() - clock,
-                run_ns=outcome.run_ns,
-                judge_ns=outcome.judge_ns,
-                ramping=ramping,
-                error=outcome.error,
-                output=outcome.output,
-            )
+        execution = Execution(
+            session=session,
+            task_id=task.id,
+            arm=arm.name,
+            repeat=repeat,
+            stage=stage,
+            status=outcome.status,
+            started_ns=started_ns,
+            ended_ns=started_ns + time.perf_counter_ns() - clock,
+            run_ns=outcome.run_ns,
+            judge_ns=outcome.judge_ns,
+            ramping=ramping,
+            error=outcome.error,
+            output=outcome.output,
         )
+        self.store.emit(execution)
         for name, value in outcome.metrics.items():
             self.store.emit(Metric(session=session, name=name, value=value))
+        return execution

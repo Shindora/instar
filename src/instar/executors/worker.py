@@ -10,6 +10,7 @@ from pathlib import Path
 from instar.dataset import Task
 from instar.events import ExecutionStatus
 from instar.executors.base import Outcome, execute
+from instar.telemetry.root import flush, install_provider
 from instar.user import AgentfileError, Context, load_agentfile
 
 
@@ -34,7 +35,11 @@ def main(argv: list[str]) -> int:
             workdir=Path(spec["workdir"]),
             proxy_url=spec["proxy_url"],
         )
-        outcome = asyncio.run(execute(user, task, ctx, keep_output=spec["keep_output"]))
+        install_provider()
+        try:
+            outcome = asyncio.run(execute(user, task, ctx, keep_output=spec["keep_output"]))
+        finally:
+            flush()
     _write_atomically(outcome_path, outcome.to_json())
     return 0
 

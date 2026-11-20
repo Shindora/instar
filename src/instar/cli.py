@@ -25,6 +25,7 @@ from instar.proxy.upstreams import resolve_upstreams
 from instar.runner import Runner, RunOptions, RunResult
 from instar.server import KEEP_ALIVE_S
 from instar.store import JsonlSink, StoreReader
+from instar.telemetry.normalise import TelemetryMap
 from instar.user import AgentfileError
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     _flag(parser, "--executor", key="executor", choices=executors.names())
     _flag(parser, "--timeout-s", key="timeout-s", help="per execution; default 600")
     _flag(parser, "--seed", key="seed")
+    _flag(parser, "--telemetry-map", key="telemetry-map", help="TOML naming span attributes")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(run, "--baseline", key="baseline", help="baseline file for gates and per-task diffs")
     _flag(run, "--strict", key="strict", action="store_const", const=True)
     _flag(run, "--interval", key="interval", help="time series bucket; default 30s")
+    _flag(run, "--otel-export", key="otel-export", help="forward the proxy's spans to a collector")
     _flag(run, "--breaking-p95", key="breaking-p95", help="p95 multiple that breaks; default 2")
     run.add_argument("--debug", action="store_true", help="one task, inline; print calls, output")
     run.set_defaults(handler=_run)
@@ -220,6 +223,13 @@ def _console(a: Analysis, run_dir: Path) -> None:
     if a.token_cap:
         cap, used = a.token_cap["cap"], a.token_cap["used"]
         print(f"token cap reached: {used} of {cap} tokens (exceeded by {max(used - cap, 0)})")
+    for c in a.checks:
+        if c.failed:
+            print(f"check {c.name}: {c.failed} failed ({', '.join(c.failing_tasks)})")
+    if a.cost_mismatch:
+        print(f"warning: {a.cost_mismatch}", file=sys.stderr)
+    if a.unjoined_spans:
+        print(f"{a.unjoined_spans} spans could not be joined to an execution")
     if a.breaking_point:
         print(f"breaking point: stage {a.breaking_point.stage} ({a.breaking_point.users} users)")
     for gate in a.gates:
@@ -264,6 +274,7 @@ def _run(args: argparse.Namespace) -> int:
                 ab=None,
             )
         baseline = _load_baseline(options)
+        TelemetryMap.load(options.telemetry_map)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
