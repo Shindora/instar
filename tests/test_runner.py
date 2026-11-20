@@ -17,7 +17,7 @@ BOTS = ROOT / "tests" / "fixtures" / "agentfile_bots.py"
 FAULTY = ROOT / "tests" / "fixtures" / "agentfile_faulty.py"
 BROKEN = ROOT / "tests" / "fixtures" / "agentfile_broken.py"
 
-pytestmark = pytest.mark.usefixtures("model_env")
+pytestmark = [pytest.mark.usefixtures("model_env"), pytest.mark.xdist_group("processes")]
 
 
 def run(agentfile: Path, runs_dir: Path, **options: object) -> tuple[RunResult, StoreReader]:

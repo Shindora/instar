@@ -63,6 +63,8 @@ class BreakingPoint:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Bucket:
+    """One interval of the time series; `users` is the most users planned during it."""
+
     start_s: float
     users: int
     started: int
@@ -190,14 +192,16 @@ def time_series(data: RunData, name: str, interval_s: float) -> list[Bucket]:
     buckets = []
     for i in range(count):
         low, high = origin + i * width, origin + (i + 1) * width
-        planned = [load.users for load in loads if load.at_ns < high]
+        before = [load.users for load in loads if load.at_ns <= low]
+        during = [load.users for load in loads if low < load.at_ns < high]
+        planned = before[-1:] + during
         finished = [e for e in data.finished() if low <= e.ended_ns < high]
         flags = [data.metrics.get(e.session, {}).get(name) is True for e in finished]
         costs = [c for e in finished if (c := data.cost(e)) is not None]
         buckets.append(
             Bucket(
                 start_s=i * interval_s,
-                users=planned[-1] if planned else 0,
+                users=max(planned, default=0),
                 started=sum(1 for e in data.executions if low <= e.started_ns < high),
                 finished=len(finished),
                 pass_rate=sum(flags) / len(flags) if flags and is_bool_metric(data, name) else None,

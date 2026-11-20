@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import queue
 import sqlite3
@@ -124,6 +125,7 @@ def jsonl_line(event: Event) -> str:
 class Store:
     """The run store: `run.sqlite` (WAL) and `events.jsonl`, both written by one thread.
 
+    The tables exist once the constructor returns, so a reader may open the store at once.
     `emit` only enqueues, so it is safe from any thread or coroutine and never blocks. `close`
     drains the queue, leaves `run.sqlite` as one self-contained file, and raises if any event
     could not be stored.
@@ -135,6 +137,11 @@ class Store:
         self._queue: queue.SimpleQueue[Event | None] = queue.SimpleQueue()
         self._failures: list[str] = []
         self._closed = False
+        with contextlib.closing(sqlite3.connect(directory / DB_NAME)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            for statement in schema():
+                db.execute(statement)
+            db.commit()
         self._thread = threading.Thread(target=self._run, name="instar-store", daemon=True)
         self._thread.start()
 
@@ -157,9 +164,6 @@ class Store:
         try:
             db = sqlite3.connect(self.directory / DB_NAME)
             try:
-                db.execute("PRAGMA journal_mode=WAL")
-                for statement in schema():
-                    db.execute(statement)
                 with (self.directory / JSONL_NAME).open("a", encoding="utf-8") as jsonl:
                     while not self._write_batch(db, jsonl):
                         pass

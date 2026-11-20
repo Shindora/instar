@@ -77,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     _flag(run, "--baseline", key="baseline", help="baseline file for gates and per-task diffs")
     _flag(run, "--strict", key="strict", action="store_const", const=True)
     _flag(run, "--interval", key="interval", help="time series bucket; default 30s")
+    _flag(run, "--breaking-p95", key="breaking-p95", help="p95 multiple that breaks; default 2")
     run.add_argument("--debug", action="store_true", help="one task, inline; print calls, output")
     run.set_defaults(handler=_run)
 

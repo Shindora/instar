@@ -225,8 +225,9 @@ def many_open_files() -> None:
 
 @pytest.mark.usefixtures("many_open_files")
 async def test_300_concurrent_sessions_complete_without_errors(
-    sink: ListSink, proxy_url: str
+    mock_upstream: MockUpstream, sink: ListSink, proxy_url: str
 ) -> None:
+    mock_upstream.delay_s = mock_upstream.chunk_delay_s = 0.0
     limits = httpx.Limits(max_connections=300)
     async with httpx.AsyncClient(limits=limits, timeout=30) as client:
         results = await asyncio.gather(
@@ -252,7 +253,10 @@ async def test_stopping_the_server_loses_no_events(
                 asyncio.create_task(run_session(client, url, f"s{i}", calls=1, stream=True))
                 for i in range(20)
             ]
-            await asyncio.sleep(0.2)
+            deadline = time.monotonic() + 10
+            while mock_upstream.in_flight < 20:
+                assert time.monotonic() < deadline, "calls never reached the upstream"
+                await asyncio.sleep(0.01)
             await asyncio.to_thread(stack.close)
             results = await asyncio.gather(*pending)
     assert results == [[200]] * 20
@@ -290,6 +294,7 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+@pytest.mark.xdist_group("processes")
 def test_cli_proxy_logs_calls_and_survives_sigterm(upstream_url: str, tmp_path: Path) -> None:
     port, out = _free_port(), tmp_path / "calls.jsonl"
     command = [sys.executable, "-m", "instar.cli", "proxy", "--port", str(port)]
