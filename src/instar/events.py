@@ -17,6 +17,30 @@ class ExecutionStatus(StrEnum):
     CRASHED = "crashed"
 
 
+class SpanKind(StrEnum):
+    LLM = "llm"
+    TOOL = "tool"
+    AGENT = "agent"
+    OTHER = "other"
+
+
+class CheckStatus(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_EVALUATED = "not_evaluated"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Run:
+    """One invocation of `instar run`: written at its start, then again with `ended_ns`."""
+
+    run_id: str
+    project: str
+    started_ns: int
+    ended_ns: int | None = None
+    config: dict[str, object] = field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LLMCall:
     """One model call seen by the proxy. Bodies and auth headers are never kept."""
@@ -67,7 +91,33 @@ class Metric:
     value: bool | int | float | str | None
 
 
-type Event = LLMCall | Execution | Metric
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Span:
+    """One span from the agent's own telemetry, normalised and joined to its execution."""
+
+    session: str
+    trace_id: str
+    span_id: str
+    parent_id: str | None
+    kind: SpanKind
+    name: str
+    started_ns: int
+    ended_ns: int
+    error: bool = False
+    attributes: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CheckResult:
+    """The verdict of one behaviour check on one execution."""
+
+    session: str
+    check: str
+    status: CheckStatus
+    detail: str | None = None
+
+
+type Event = Run | LLMCall | Execution | Metric | Span | CheckResult
 
 
 class Sink(Protocol):
