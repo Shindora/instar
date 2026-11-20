@@ -77,6 +77,7 @@ class Execution:
     stage: int
     status: ExecutionStatus
     started_ns: int
+    ended_ns: int
     run_ns: int
     judge_ns: int | None = None
     ramping: bool = False
@@ -119,7 +120,38 @@ class CheckResult:
     detail: str | None = None
 
 
-type Event = Run | LLMCall | Execution | Metric | Span | CheckResult
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Load:
+    """The target number of users changed: at a stage start, or one ramp step."""
+
+    at_ns: int
+    stage: int
+    users: int
+    ramping: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StageWindow:
+    """When one stage ran. `steady_ns` is when its ramp finished; timed stages have `hold_s`."""
+
+    stage: int
+    users: int
+    hold_s: float | None
+    started_ns: int
+    steady_ns: int
+    ended_ns: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Shed:
+    """An open-loop arrival that found every user busy, so it never ran."""
+
+    stage: int
+    at_ns: int
+    task_id: str
+
+
+type Event = Run | LLMCall | Execution | Metric | Span | CheckResult | Load | StageWindow | Shed
 
 
 class Sink(Protocol):

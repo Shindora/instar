@@ -10,7 +10,17 @@ from enum import Enum
 from functools import cache, singledispatchmethod
 from typing import TYPE_CHECKING, Any, get_args, get_type_hints
 
-from instar.events import CheckResult, Execution, LLMCall, Metric, Run, Span
+from instar.events import (
+    CheckResult,
+    Execution,
+    LLMCall,
+    Load,
+    Metric,
+    Run,
+    Shed,
+    Span,
+    StageWindow,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,6 +42,9 @@ TABLES: dict[type[DataclassInstance], str] = {
     Metric: "metrics",
     Span: "spans",
     CheckResult: "check_results",
+    Load: "load",
+    StageWindow: "stages",
+    Shed: "shed",
 }
 UNIQUE: dict[type[DataclassInstance], str] = {Run: "run_id"}
 SQL_TYPES: dict[object, str] = {int: "INTEGER", float: "REAL", str: "TEXT"}

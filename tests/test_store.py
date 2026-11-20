@@ -61,6 +61,7 @@ def session_events(session: str) -> list[Event]:
             stage=1,
             status=ExecutionStatus.OK,
             started_ns=1,
+            ended_ns=3,
             run_ns=2,
             ramping=True,
         ),

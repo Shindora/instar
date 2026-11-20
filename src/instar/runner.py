@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import platform
+import random
 import secrets
 import tempfile
 import time
@@ -13,10 +14,11 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from importlib import metadata
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
+from instar.config import Stage
 from instar.dataset import limit
-from instar.events import Execution, ExecutionStatus, Metric, Run
+from instar.events import Execution, ExecutionStatus, Load, Metric, Run, Shed, StageWindow
 from instar.executors import ExecutionSpec, Outcome, executors
 from instar.proxy.app import Proxy
 from instar.proxy.upstreams import DEFAULT_MODEL_ENV, model_url, resolve_upstreams
@@ -25,7 +27,7 @@ from instar.store import Store
 from instar.user import load_agentfile
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import Generator, Mapping, Sequence
 
     from instar.dataset import Task
     from instar.executors.base import ExecutorFn
@@ -36,12 +38,20 @@ DEFAULT_USERS = 4
 MAX_PROCESS_USERS = 64
 DEFAULT_ARM = "default"
 
+type WorkItem = tuple[Task, int]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunOptions:
-    agentfile: Path
-    project: str
+    agentfile: Path = Path("agentfile.py")
+    project: str = "default"
     users: int = DEFAULT_USERS
+    stages: tuple[Stage, ...] | None = None
+    hold_s: float | None = None
+    ramp_per_min: float | None = None
+    think_time_s: float = 0.0
+    rate_per_s: float | None = None
+    max_users: int | None = None
     repeat: int = 1
     limit: int | None = None
     timeout_s: float = DEFAULT_TIMEOUT_S
@@ -55,6 +65,20 @@ class RunOptions:
     runs_dir: Path = Path("runs")
     upstreams: dict[str, str] = field(default_factory=dict)
     model_env: dict[str, str] = field(default_factory=dict)
+    fail_if: tuple[str, ...] = ()
+    baseline: Path | None = None
+    strict: bool = False
+    interval_s: float = 30.0
+    breaking_p95: float = 2.0
+    kind: str = "run"
+
+    def shape(self) -> tuple[Stage, ...]:
+        """The stages to run: the given list, or one stage from `users` and `hold_s`."""
+        return self.stages or (Stage(users=self.users, hold_s=self.hold_s),)
+
+    @property
+    def timed(self) -> bool:
+        return self.rate_per_s is not None or any(s.hold_s is not None for s in self.shape())
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -64,6 +88,13 @@ class RunResult:
     statuses: dict[ExecutionStatus, int]
     primary: str
     cancelled: bool
+
+
+def new_run_id() -> str:
+    """Sorts by start time, to the millisecond, so the newest run is last by name."""
+    now_ns = time.time_ns()
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now_ns / 1e9))
+    return f"{stamp}-{now_ns // 1_000_000 % 1000:03d}-{secrets.token_hex(3)}"
 
 
 def new_session() -> str:
@@ -100,39 +131,101 @@ def _sessionless_env(model_env: Mapping[str, str], proxy_url: str) -> Generator[
                 os.environ[var] = value
 
 
-class Runner:
-    """Closed loop: `users` concurrent users each take the next (task, repeat) until none is left.
+class Source(Protocol):
+    def take(self) -> WorkItem | None: ...
 
-    One run is one proxy and one store. `stop()` starts no new execution, cancels those in flight
-    (recorded as `cancelled`) and still closes the run cleanly.
+    def finished(self) -> None: ...
+
+
+class Drain:
+    """Every (task, repeat) once; `drained` is set when all have been taken and finished."""
+
+    def __init__(self, items: Sequence[WorkItem]) -> None:
+        self.items = deque(items)
+        self.in_flight = 0
+        self.drained = asyncio.Event()
+        if not self.items:
+            self.drained.set()
+
+    def take(self) -> WorkItem | None:
+        if not self.items:
+            return None
+        self.in_flight += 1
+        return self.items.popleft()
+
+    def finished(self) -> None:
+        self.in_flight -= 1
+        if not self.items and not self.in_flight:
+            self.drained.set()
+
+
+class Rounds:
+    """Endless rounds over a seeded shuffle of the task set; the round number is the repeat."""
+
+    def __init__(self, tasks: Sequence[Task], seed: str) -> None:
+        self.tasks = list(tasks)
+        self.rng = random.Random(seed)
+        self.queue: deque[WorkItem] = deque()
+        self.round = -1
+
+    def take(self) -> WorkItem:
+        if not self.queue:
+            self.round += 1
+            order = self.tasks[:]
+            self.rng.shuffle(order)
+            self.queue.extend((task, self.round) for task in order)
+        return self.queue.popleft()
+
+    def finished(self) -> None:
+        pass
+
+
+class Runner:
+    """Runs an agentfile through a load shape. One run is one proxy and one store.
+
+    `stop()` starts no new execution, cancels those in flight (recorded as `cancelled`) and
+    still closes the run cleanly.
     """
 
     def __init__(self, options: RunOptions) -> None:
-        self.options = options
         self.warnings: list[str] = []
-        self.users = options.users
-        if options.executor == "process" and options.users > MAX_PROCESS_USERS:
-            self.users = MAX_PROCESS_USERS
-            self.warnings.append(
-                f"users capped at {MAX_PROCESS_USERS}: each process user is a Python process"
-                " holding the agent's imports"
-            )
-        self.run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+        if options.executor == "process":
+            options = self._cap_process_users(options)
+        self.options = options
+        self.run_id = new_run_id()
         self.run_dir = options.runs_dir / options.project / self.run_id
         self.statuses: Counter[ExecutionStatus] = Counter()
         self.primary = "passed"
-        self._stopping = False
-        self._user_tasks: list[asyncio.Task[None]] = []
+        self.stopping = False
+        self._shape: asyncio.Task[None] | None = None
+
+    def _cap_process_users(self, options: RunOptions) -> RunOptions:
+        shape = options.shape()
+        if (
+            max(s.users for s in shape) <= MAX_PROCESS_USERS
+            and (options.max_users or 0) <= MAX_PROCESS_USERS
+        ):
+            return options
+        self.warnings.append(
+            f"users capped at {MAX_PROCESS_USERS}: each process user is a Python process"
+            " holding the agent's imports"
+        )
+        capped = tuple(copy.replace(s, users=min(s.users, MAX_PROCESS_USERS)) for s in shape)
+        max_users = None if options.max_users is None else min(options.max_users, MAX_PROCESS_USERS)
+        return copy.replace(options, stages=capped, max_users=max_users)
+
+    @property
+    def users(self) -> int:
+        return max(s.users for s in self.options.shape())
 
     def stop(self) -> None:
-        self._stopping = True
-        for task in self._user_tasks:
-            task.cancel()
+        self.stopping = True
+        if self._shape is not None:
+            self._shape.cancel()
 
     def _config(self) -> dict[str, object]:
         return {
             **asdict(self.options),
-            "users": self.users,
             "run_id": self.run_id,
             "versions": {
                 "instar": metadata.version("instar"),
@@ -169,16 +262,18 @@ class Runner:
                     user = load_agentfile(options.agentfile, options.user)
                     self.primary = user.primary
                     tasks = limit(user.tasks, options.limit)
-                    work = deque((t, r) for r in range(options.repeat) for t in tasks)
-                    loop = _Loop(self, user, executor, proxy, proxy_url, model_env, store)
-                    async with asyncio.TaskGroup() as group:
-                        self._user_tasks = [
-                            group.create_task(loop.user(work))
-                            for _ in range(min(self.users, len(work)))
-                        ]
-                        if self._stopping:
-                            self.stop()
+                    loop = _Loop(self, user, tasks, executor, proxy, proxy_url, model_env, store)
+                    self._shape = asyncio.create_task(loop.drive())
+                    if self.stopping:
+                        self._shape.cancel()
+                    try:
+                        await self._shape
+                    except asyncio.CancelledError:
+                        if not self.stopping:
+                            raise
         finally:
+            config["primary"] = self.primary
+            _write_json(self.run_dir / "config.json", config)
             store.emit(copy.replace(run, config=config, ended_ns=time.time_ns()))
             store.close()
         return RunResult(
@@ -186,7 +281,7 @@ class Runner:
             run_dir=self.run_dir,
             statuses=dict(self.statuses),
             primary=self.primary,
-            cancelled=self._stopping,
+            cancelled=self.stopping,
         )
 
 
@@ -194,18 +289,139 @@ class Runner:
 class _Loop:
     runner: Runner
     user_class: type[AgentUser]
+    tasks: list[Task]
     executor: ExecutorFn
     proxy: Proxy
     proxy_url: str
     model_env: dict[str, str]
     store: Store
+    stage: int = 0
+    target: int = 0
+    ramping: bool = False
+    source: Source | None = None
+    alive: set[int] = field(default_factory=set)
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
+    group: asyncio.TaskGroup | None = None
 
-    async def user(self, work: deque[tuple[Task, int]]) -> None:
-        while work and not self.runner._stopping:
-            task, repeat = work.popleft()
-            await self.execute(task, repeat)
+    async def drive(self) -> None:
+        options = self.runner.options
+        async with asyncio.TaskGroup() as group:
+            self.group = group
+            if options.rate_per_s is not None and options.hold_s is not None:
+                await self.open_loop(options.rate_per_s, options.hold_s)
+                return
+            for index, stage in enumerate(options.shape(), start=1):
+                await self.run_stage(index, stage)
+            self.set_target(0)
 
-    async def execute(self, task: Task, repeat: int) -> None:
+    def wake(self) -> None:
+        self.changed.set()
+        self.changed = asyncio.Event()
+
+    def set_target(self, users: int) -> None:
+        self.target = users
+        self.store.emit(
+            Load(at_ns=time.time_ns(), stage=self.stage, users=users, ramping=self.ramping)
+        )
+        assert self.group is not None
+        for slot in range(users):
+            if slot not in self.alive:
+                self.alive.add(slot)
+                self.group.create_task(self.user(slot))
+        self.wake()
+
+    async def ramp_to(self, users: int) -> None:
+        ramp = self.runner.options.ramp_per_min
+        if ramp is None or self.target in (0, users):
+            self.set_target(users)
+            return
+        step_s = 60 / ramp
+        self.ramping = self.target != users
+        while self.target != users:
+            self.set_target(self.target + (1 if users > self.target else -1))
+            if self.target != users:
+                await asyncio.sleep(step_s)
+        self.ramping = False
+
+    async def run_stage(self, index: int, stage: Stage) -> None:
+        options = self.runner.options
+        started_ns = time.time_ns()
+        if stage.hold_s is None:
+            work = [(t, r) for r in range(options.repeat) for t in self.tasks]
+            source: Drain | Rounds = Drain(work)
+        else:
+            source = Rounds(self.tasks, seed=f"{options.seed}:{index}")
+        self.stage, self.source = index, source
+        await self.ramp_to(stage.users)
+        steady_ns = time.time_ns()
+        if isinstance(source, Drain):
+            await source.drained.wait()
+        else:
+            await asyncio.sleep(stage.hold_s or 0)
+        self.store.emit(
+            StageWindow(
+                stage=index,
+                users=stage.users,
+                hold_s=stage.hold_s,
+                started_ns=started_ns,
+                steady_ns=steady_ns,
+                ended_ns=time.time_ns(),
+            )
+        )
+
+    async def user(self, slot: int) -> None:
+        think_s = self.runner.options.think_time_s
+        try:
+            while slot < self.target:
+                source = self.source
+                item = source.take() if source is not None else None
+                if source is None or item is None:
+                    await self.changed.wait()
+                    continue
+                task, repeat = item
+                try:
+                    await self.execute(task, repeat, self.stage, self.ramping)
+                finally:
+                    source.finished()
+                if think_s:
+                    await asyncio.sleep(think_s)
+        finally:
+            self.alive.discard(slot)
+
+    async def open_loop(self, rate_per_s: float, hold_s: float) -> None:
+        """Tasks arrive on a fixed schedule; an arrival that finds every user busy is shed."""
+        options = self.runner.options
+        cap = options.max_users or MAX_PROCESS_USERS
+        source = Rounds(self.tasks, seed=f"{options.seed}:1")
+        self.stage = 1
+        self.store.emit(Load(at_ns=time.time_ns(), stage=1, users=cap, ramping=False))
+        running: set[asyncio.Task[None]] = set()
+        loop = asyncio.get_running_loop()
+        started, started_ns = loop.time(), time.time_ns()
+        arrivals = int(hold_s * rate_per_s - 1e-9) + 1
+        assert self.group is not None
+        for n in range(arrivals):
+            await asyncio.sleep(max(0.0, started + n / rate_per_s - loop.time()))
+            task, repeat = source.take()
+            if len(running) >= cap:
+                self.store.emit(Shed(stage=1, at_ns=time.time_ns(), task_id=task.id))
+                continue
+            execution = self.group.create_task(self.execute(task, repeat, 1, False))
+            running.add(execution)
+            execution.add_done_callback(running.discard)
+        await asyncio.sleep(max(0.0, started + hold_s - loop.time()))
+        self.store.emit(
+            StageWindow(
+                stage=1,
+                users=cap,
+                hold_s=hold_s,
+                started_ns=started_ns,
+                steady_ns=started_ns,
+                ended_ns=time.time_ns(),
+            )
+        )
+
+    async def execute(self, task: Task, repeat: int, stage: int, ramping: bool) -> None:
         options = self.runner.options
         session = new_session()
         self.proxy.fault_keys[session] = f"{task.id}:{repeat}"
@@ -231,12 +447,20 @@ class _Loop:
             except asyncio.CancelledError:
                 elapsed_ns = time.perf_counter_ns() - clock
                 cancelled = Outcome(status=ExecutionStatus.CANCELLED, run_ns=elapsed_ns)
-                self.record(session, task, repeat, started_ns, cancelled)
+                self.record(session, task, repeat, stage, ramping, started_ns, clock, cancelled)
                 raise
-        self.record(session, task, repeat, started_ns, outcome)
+        self.record(session, task, repeat, stage, ramping, started_ns, clock, outcome)
 
     def record(
-        self, session: str, task: Task, repeat: int, started_ns: int, outcome: Outcome
+        self,
+        session: str,
+        task: Task,
+        repeat: int,
+        stage: int,
+        ramping: bool,
+        started_ns: int,
+        clock: int,
+        outcome: Outcome,
     ) -> None:
         self.runner.statuses[outcome.status] += 1
         self.store.emit(
@@ -245,11 +469,13 @@ class _Loop:
                 task_id=task.id,
                 arm=DEFAULT_ARM,
                 repeat=repeat,
-                stage=1,
+                stage=stage,
                 status=outcome.status,
                 started_ns=started_ns,
+                ended_ns=started_ns + time.perf_counter_ns() - clock,
                 run_ns=outcome.run_ns,
                 judge_ns=outcome.judge_ns,
+                ramping=ramping,
                 error=outcome.error,
                 output=outcome.output,
             )

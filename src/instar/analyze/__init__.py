@@ -1,0 +1,184 @@
+"""Turn a run store into numbers: one `analyze()` used by reports, gates, and the live UI."""
+
+from __future__ import annotations
+
+import statistics
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from instar.analyze import baseline as baselines
+from instar.analyze.curve import (
+    BreakingPoint,
+    Bucket,
+    Group,
+    StageStats,
+    breaking_point,
+    could_not_run,
+    group,
+    is_bool_metric,
+    metric_names,
+    stage_stats,
+    time_series,
+)
+from instar.analyze.data import RunData
+from instar.analyze.gate import GateResult, evaluate, parse_all
+from instar.analyze.stats import Estimate, mean, rate
+from instar.config import ConfigError
+from instar.events import ExecutionStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from pathlib import Path
+
+    from instar.analyze.baseline import Baseline, TaskChange
+    from instar.analyze.data import MetricValue
+    from instar.events import Execution
+    from instar.runner import RunOptions
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TaskRow:
+    task_id: str
+    executions: int
+    statuses: dict[str, int]
+    primary: float | None
+    cost_usd: float | None
+    metrics: dict[str, float]
+
+    @property
+    def failing(self) -> bool:
+        low_primary = self.primary is not None and self.primary < 1
+        return low_primary or any(status != "ok" for status in self.statuses)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Analysis:
+    run_id: str
+    project: str
+    primary: str
+    summary: Group
+    first_attempts: Group
+    repeats: Group | None
+    stages: list[StageStats]
+    breaking_point: BreakingPoint | None
+    series: list[Bucket]
+    tasks: list[TaskRow]
+    metrics: dict[str, Estimate]
+    percent_metrics: frozenset[str]
+    gates: list[GateResult] = field(default_factory=list)
+    changes: list[TaskChange] | None = None
+    baseline_run: str | None = None
+    could_not_run: str | None = None
+    gate_error: str | None = None
+
+
+def _numeric(value: object) -> float | None:
+    if isinstance(value, bool):
+        return float(value)
+    return float(value) if isinstance(value, int | float) else None
+
+
+def _numbers(values: Sequence[Mapping[str, MetricValue]], name: str) -> list[float]:
+    return [n for v in values if (n := _numeric(v.get(name))) is not None]
+
+
+def _task_rows(data: RunData, executions: list[Execution], primary: str) -> list[TaskRow]:
+    by_task: dict[str, list[Execution]] = {}
+    for execution in executions:
+        by_task.setdefault(execution.task_id, []).append(execution)
+    bool_primary = is_bool_metric(data, primary)
+    rows = []
+    for task_id, runs in by_task.items():
+        values = [data.metrics.get(e.session, {}) for e in runs]
+        if bool_primary:
+            primary_value: float | None = sum(v.get(primary) is True for v in values) / len(runs)
+        else:
+            numbers = _numbers(values, primary)
+            primary_value = statistics.fmean(numbers) if numbers else None
+        names = sorted({name for v in values for name in v})
+        means = {name: statistics.fmean(ns) for name in names if (ns := _numbers(values, name))}
+        costs = [c for e in runs if (c := data.cost(e)) is not None]
+        rows.append(
+            TaskRow(
+                task_id=task_id,
+                executions=len(runs),
+                statuses=dict(Counter(str(e.status) for e in runs)),
+                primary=primary_value,
+                cost_usd=statistics.fmean(costs) if costs else None,
+                metrics=means,
+            )
+        )
+    return sorted(rows, key=lambda r: (not r.failing, r.primary or 0, r.task_id))
+
+
+def _gate_metrics(
+    data: RunData, steady: list[Execution], summary: Group, stages: list[StageStats], seed: str
+) -> dict[str, Estimate]:
+    metrics: dict[str, Estimate] = {}
+    values = [data.metrics.get(e.session, {}) for e in steady]
+    for name in metric_names(data):
+        if is_bool_metric(data, name):
+            metrics[name] = rate([v.get(name) is True for v in values])
+        else:
+            metrics[name] = mean(_numbers(values, name), seed=f"{seed}:{name}")
+    metrics["timeout_rate"] = rate([e.status is ExecutionStatus.TIMEOUT for e in steady])
+    metrics["error_rate"] = Estimate(value=summary.model_error_rate, n=summary.model_calls)
+    metrics["cost_per_pass"] = Estimate(value=summary.cost_per_pass)
+    metrics["p50_run_s"] = Estimate(value=summary.p50_run_s, n=summary.executions)
+    metrics["p95_run_s"] = Estimate(value=summary.p95_run_s, n=summary.executions)
+    timed = [s for s in stages if s.hold_s is not None]
+    if timed:
+        peak = max(reversed(timed), key=lambda s: s.users)
+        metrics["tasks_per_hour"] = Estimate(value=peak.tasks_per_hour)
+        if peak.arrivals is not None:
+            metrics["shed_rate"] = Estimate(value=peak.shed_rate, n=peak.arrivals)
+    return metrics
+
+
+def analyze(run_dir: Path, options: RunOptions, *, baseline: Baseline | None = None) -> Analysis:
+    """Everything the reports and gates need. Works on a run that is still being written."""
+    data = RunData.load(run_dir)
+    config = data.run.config if data.run else {}
+    primary = str(config.get("primary", "passed"))
+    seed = f"{options.seed}:analysis"
+    steady = [e for e in data.finished() if not e.ramping]
+    first = [e for e in steady if e.repeat == 0]
+    repeats = [e for e in steady if e.repeat > 0]
+    summary = group(data, steady, primary, seed=f"{seed}:all")
+    stages = stage_stats(data, primary, seed=seed)
+    metrics = _gate_metrics(data, steady, summary, stages, seed)
+    percent = frozenset(n for n in metrics if is_bool_metric(data, n) or n.endswith("_rate"))
+    rows = _task_rows(data, data.finished(), primary)
+    gate_error = None
+    try:
+        gates = evaluate(
+            parse_all(options.fail_if),
+            metrics,
+            baseline=baseline.summary if baseline else None,
+            percent_metrics=percent,
+        )
+    except ConfigError as exc:
+        gates, gate_error = [], str(exc)
+    return Analysis(
+        run_id=data.run.run_id if data.run else run_dir.name,
+        project=data.run.project if data.run else run_dir.parent.name,
+        primary=primary,
+        summary=summary,
+        first_attempts=group(data, first, primary, seed=f"{seed}:first"),
+        repeats=group(data, repeats, primary, seed=f"{seed}:repeats") if repeats else None,
+        stages=stages,
+        breaking_point=breaking_point(stages, options.breaking_p95),
+        series=time_series(data, primary, options.interval_s),
+        tasks=rows,
+        metrics=metrics,
+        percent_metrics=percent,
+        gates=gates,
+        changes=baselines.compare(rows, baseline) if baseline else None,
+        baseline_run=baseline.run_id if baseline else None,
+        could_not_run=could_not_run(data),
+        gate_error=gate_error,
+    )
+
+
+__all__ = ["Analysis", "TaskRow", "analyze"]

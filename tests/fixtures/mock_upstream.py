@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from starlette.requests import Request
     from starlette.responses import Response
@@ -81,16 +81,38 @@ class MockUpstream:
     chunk_delay_s: float = 0.0
     fail_status: int | None = None
     cached_input_tokens: int = 0
+    capacity: int | None = None
     calls: int = 0
+    in_flight: int = 0
 
     def build_app(self) -> Starlette:
         return Starlette(
             routes=[
-                Route("/v1/chat/completions", self._openai, methods=["POST"]),
-                Route("/v1/messages", self._anthropic, methods=["POST"]),
-                Route("/{prefix:path}/models/{target}", self._gemini, methods=["POST"]),
+                Route("/v1/chat/completions", self._guard(self._openai), methods=["POST"]),
+                Route("/v1/messages", self._guard(self._anthropic), methods=["POST"]),
+                Route(
+                    "/{prefix:path}/models/{target}", self._guard(self._gemini), methods=["POST"]
+                ),
             ]
         )
+
+    def _guard(
+        self, handler: Callable[[Request], Awaitable[Response]]
+    ) -> Callable[[Request], Awaitable[Response]]:
+        """Above `capacity` requests in flight, answer 503 after the usual delay."""
+
+        async def guarded(request: Request) -> Response:
+            self.in_flight += 1
+            try:
+                if self.capacity is None or self.in_flight <= self.capacity:
+                    return await handler(request)
+                await self._receive(request)
+                body = {"error": {"type": "overloaded", "message": "over capacity"}}
+                return JSONResponse(body, 503)
+            finally:
+                self.in_flight -= 1
+
+        return guarded
 
     async def _receive(self, request: Request) -> dict[str, Any]:
         self.calls += 1
